@@ -3,7 +3,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from anvil import llm
+from common import llm
 from anvil.config import AgentConfig, resolve_model_alias
 from anvil.history import MessageHistory
 from anvil.git import GitRepo

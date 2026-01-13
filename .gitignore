@@ -38,3 +38,7 @@ htmlcov/
 .nox/
 
 *.log
+
+data/
+transcripts/
+local-only/
