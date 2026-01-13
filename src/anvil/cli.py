@@ -1,15 +1,18 @@
-import os
 import sys
 import argparse
 import subprocess
 
-from anvil.config import AgentConfig
+from anvil.config import AgentConfig, resolve_model_alias
 from anvil.agent import CodingAgentWithTools
 
 
 def main():
     parser = argparse.ArgumentParser(description="Anvil - AI Coding Agent with Tools")
-    parser.add_argument("--model", default="gpt-4o", help="Model to use")
+    parser.add_argument(
+        "--model",
+        default="gpt-4o",
+        help="Model to use (supports aliases: sonnet, opus, haiku, flash, deepseek)",
+    )
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming")
     parser.add_argument(
         "--dry-run", action="store_true", help="Don't actually edit files"
@@ -20,21 +23,23 @@ def main():
     parser.add_argument(
         "--no-tools", action="store_true", help="Disable structured tools"
     )
+    parser.add_argument(
+        "--no-lint", action="store_true", help="Disable auto-linting after edits"
+    )
     parser.add_argument("files", nargs="*", help="Files to add to context")
     parser.add_argument("--message", "-m", help="Initial message")
 
     args = parser.parse_args()
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("❌ Error: OPENAI_API_KEY environment variable not set")
-        sys.exit(1)
+    model = resolve_model_alias(args.model)
 
     config = AgentConfig(
-        model=args.model,
+        model=model,
         stream=not args.no_stream,
         dry_run=args.dry_run,
         auto_commit=not args.no_auto_commit,
         use_tools=not args.no_tools,
+        auto_lint=not args.no_lint,
     )
 
     try:

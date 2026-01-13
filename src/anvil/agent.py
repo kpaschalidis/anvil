@@ -1,16 +1,17 @@
-import os
 import json
+import subprocess
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-import openai
 
-from anvil.config import AgentConfig
+from anvil import llm
+from anvil.config import AgentConfig, resolve_model_alias
 from anvil.history import MessageHistory
 from anvil.git import GitRepo
 from anvil.files import FileManager
 from anvil.shell import ShellRunner
 from anvil.parser import ResponseParser
 from anvil.tools import ToolRegistry
+from anvil.linter import Linter
 
 
 class CodingAgentWithTools:
@@ -24,11 +25,12 @@ class CodingAgentWithTools:
         self.shell = ShellRunner(str(root_path))
         self.parser = ResponseParser()
         self.tools = ToolRegistry()
+        self.linter = Linter(str(root_path))
 
         self.files_in_context: List[str] = []
         self.interrupted = False
-
-        self.client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        self.last_commit_hash: str | None = None
+        self.last_edited_files: List[str] = []
 
         self._register_tools()
         self._set_system_prompt()
@@ -140,6 +142,7 @@ class CodingAgentWithTools:
 
     def _tool_write_file(self, filepath: str, content: str) -> str:
         self.files.write_file(filepath, content)
+        self.last_edited_files.append(filepath)
         return f"File {filepath} written successfully"
 
     def _tool_list_files(self, pattern: str = "*") -> str:
@@ -166,6 +169,7 @@ class CodingAgentWithTools:
     def _tool_apply_edit(self, filepath: str, search: str, replace: str) -> str:
         success = self.files.apply_edit(filepath, search, replace)
         if success:
+            self.last_edited_files.append(filepath)
             return f"Edit applied successfully to {filepath}"
         else:
             return f"Failed to apply edit to {filepath} - search block not found"
@@ -218,8 +222,8 @@ Be concise and helpful."""
                 print(f"❌ Error adding {filepath}: {e}")
 
     def run(self, initial_message: Optional[str] = None):
-        print("🤖 Coding Agent started (with tools)")
-        print("Commands: /quit, /add <file>, /git status, /git diff")
+        print(f"🤖 Anvil started (model: {self.config.model})")
+        print("Commands: /help for all commands")
         print()
 
         if initial_message:
@@ -253,48 +257,157 @@ Be concise and helpful."""
 
     def _handle_command(self, command: str) -> bool:
         parts = command.split(maxsplit=1)
-        cmd = parts[0]
+        cmd = parts[0].lstrip("/")
         args = parts[1] if len(parts) > 1 else ""
 
-        if cmd == "/quit" or cmd == "/exit":
-            print("👋 Goodbye!")
-            return False
+        handler = getattr(self, f"cmd_{cmd}", None)
+        if handler:
+            return handler(args)
 
-        elif cmd == "/add":
-            if args:
-                self.add_file_to_context(args)
-            else:
-                print("Usage: /add <filepath>")
+        print(f"Unknown command: /{cmd}. Type /help for available commands.")
+        return True
 
-        elif cmd == "/git":
-            if args == "status":
-                print(self.git.get_status())
-            elif args == "diff":
-                print(self.git.get_diff())
-            else:
-                print("Usage: /git status or /git diff")
+    def cmd_quit(self, args: str) -> bool:
+        print("👋 Goodbye!")
+        return False
 
-        elif cmd == "/help":
-            print(
-                """
-Commands:
-  /add <file>   - Add file to context
-  /git status   - Show git status
-  /git diff     - Show git diff
-  /quit         - Exit
-            """
-            )
+    def cmd_exit(self, args: str) -> bool:
+        return self.cmd_quit(args)
 
+    def cmd_add(self, args: str) -> bool:
+        if args:
+            self.add_file_to_context(args)
         else:
-            print(f"Unknown command: {cmd}")
+            print("Usage: /add <filepath>")
+        return True
 
+    def cmd_drop(self, args: str) -> bool:
+        if not args:
+            print("Usage: /drop <filepath>")
+            return True
+        if args in self.files_in_context:
+            self.files_in_context.remove(args)
+            print(f"✅ Dropped {args} from context")
+        else:
+            print(f"❌ {args} not in context")
+        return True
+
+    def cmd_files(self, args: str) -> bool:
+        if not self.files_in_context:
+            print("No files in context")
+        else:
+            print("Files in context:")
+            for f in self.files_in_context:
+                print(f"  • {f}")
+        return True
+
+    def cmd_clear(self, args: str) -> bool:
+        self.history.clear()
+        self.files_in_context.clear()
+        self._set_system_prompt()
+        print("✅ Cleared chat history and context")
+        return True
+
+    def cmd_undo(self, args: str) -> bool:
+        if not self.last_commit_hash:
+            print("❌ No recent commit to undo")
+            return True
+        try:
+            subprocess.run(
+                ["git", "reset", "--soft", "HEAD~1"],
+                cwd=self.root_path,
+                check=True,
+                capture_output=True,
+            )
+            print(f"✅ Reverted commit {self.last_commit_hash[:8]}")
+            self.last_commit_hash = None
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to undo: {e}")
+        return True
+
+    def cmd_model(self, args: str) -> bool:
+        if not args:
+            print(f"Current model: {self.config.model}")
+            return True
+        self.config.model = resolve_model_alias(args)
+        print(f"✅ Switched to model: {self.config.model}")
+        return True
+
+    def cmd_tokens(self, args: str) -> bool:
+        try:
+            import tiktoken
+            enc = tiktoken.encoding_for_model("gpt-4o")
+            messages = self.history.get_messages_for_api()
+            total = sum(len(enc.encode(str(m.get("content", "")))) for m in messages)
+            print(f"📊 Estimated tokens: ~{total:,}")
+        except ImportError:
+            msg_count = len(self.history.messages)
+            print(f"📊 Messages in history: {msg_count} (install tiktoken for token count)")
+        return True
+
+    def cmd_git(self, args: str) -> bool:
+        if args == "status":
+            print(self.git.get_status() or "Nothing to commit")
+        elif args == "diff":
+            print(self.git.get_diff() or "No changes")
+        else:
+            print("Usage: /git status or /git diff")
+        return True
+
+    def cmd_help(self, args: str) -> bool:
+        print("""
+Commands:
+  /add <file>     Add file to context
+  /drop <file>    Remove file from context
+  /files          List files in context
+  /clear          Clear chat history
+  /undo           Revert last auto-commit
+  /model [name]   Show or switch model
+  /tokens         Show token usage
+  /git status     Show git status
+  /git diff       Show git diff
+  /help           Show this help
+  /quit           Exit
+""")
         return True
 
     def process_user_message(self, message: str):
         self.history.add_user_message(message)
         self._send_to_llm_with_tools()
 
+    def _lint_and_fix(self, max_retries: int | None = None):
+        if not self.config.auto_lint or not self.last_edited_files:
+            return
+
+        retries = max_retries or self.config.lint_fix_retries
+        files_to_lint = list(set(self.last_edited_files))
+        self.last_edited_files.clear()
+
+        for attempt in range(retries):
+            errors = []
+            for filepath in files_to_lint:
+                result = self.linter.lint(filepath)
+                if result:
+                    errors.append(f"## {filepath}\n{result.text}")
+
+            if not errors:
+                return
+
+            print(f"🔍 Lint errors found (attempt {attempt + 1}/{retries})")
+            error_msg = "Fix these lint errors:\n\n" + "\n\n".join(errors)
+            self.history.add_user_message(error_msg)
+            self._send_to_llm_with_tools_internal()
+            files_to_lint = list(set(self.last_edited_files))
+            self.last_edited_files.clear()
+
+        if errors:
+            print("⚠️  Could not auto-fix all lint errors")
+
     def _send_to_llm_with_tools(self):
+        self._send_to_llm_with_tools_internal()
+        self._lint_and_fix()
+
+    def _send_to_llm_with_tools_internal(self):
         messages = self.history.get_messages_for_api()
 
         max_iterations = 10
@@ -318,7 +431,7 @@ Commands:
                 if self.config.stream:
                     response = self._handle_streaming_with_tools(api_kwargs)
                 else:
-                    completion = self.client.chat.completions.create(**api_kwargs)
+                    completion = llm.completion(**api_kwargs)
                     response = completion.choices[0].message
 
                 if hasattr(response, "tool_calls") and response.tool_calls:
@@ -368,20 +481,22 @@ Commands:
 
                 break
 
-            except openai.RateLimitError:
-                print("❌ Rate limit hit. Waiting...")
-                import time
-                time.sleep(5)
-                continue
-
             except Exception as e:
+                error_str = str(e).lower()
+                if "rate" in error_str and "limit" in error_str:
+                    print("❌ Rate limit hit. Waiting...")
+                    import time
+                    time.sleep(5)
+                    continue
+
                 print(f"\n❌ Error calling LLM: {e}")
                 import traceback
                 traceback.print_exc()
                 break
 
     def _handle_streaming_with_tools(self, api_kwargs: Dict) -> Any:
-        stream = self.client.chat.completions.create(**api_kwargs, stream=True)
+        api_kwargs["stream"] = True
+        stream = llm.completion(**api_kwargs)
 
         accumulated_content = ""
         accumulated_tool_calls: Dict[int, Dict[str, Any]] = {}
@@ -394,12 +509,12 @@ Commands:
 
             delta = chunk.choices[0].delta
 
-            if delta.content:
+            if hasattr(delta, "content") and delta.content:
                 content = delta.content
                 print(content, end="", flush=True)
                 accumulated_content += content
 
-            if delta.tool_calls:
+            if hasattr(delta, "tool_calls") and delta.tool_calls:
                 for tc in delta.tool_calls:
                     idx = tc.index
 
@@ -412,10 +527,11 @@ Commands:
 
                     if tc.id:
                         accumulated_tool_calls[idx]["id"] = tc.id
-                    if tc.function.name:
-                        accumulated_tool_calls[idx]["function"]["name"] = tc.function.name
-                    if tc.function.arguments:
-                        accumulated_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+                    if hasattr(tc, "function") and tc.function:
+                        if tc.function.name:
+                            accumulated_tool_calls[idx]["function"]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            accumulated_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
 
         print()
 
@@ -463,13 +579,15 @@ Commands:
             if success:
                 print(f"  ✅ {filename} updated")
                 edited_files.append(filename)
+                self.last_edited_files.append(filename)
             else:
                 print(f"  ❌ Failed to edit {filename}")
 
         if edited_files and self.config.auto_commit and not self.config.dry_run:
             try:
-                commit_msg = "aider: applied edits"
-                self.git.commit(commit_msg, edited_files)
+                commit_msg = "anvil: applied edits"
+                hash_str, _ = self.git.commit(commit_msg, edited_files)
+                self.last_commit_hash = hash_str
                 print("✅ Auto-committed changes")
             except Exception as e:
                 print(f"⚠️  Failed to commit: {e}")
