@@ -36,6 +36,7 @@ class PainSnippet(BaseModel):
     signal_type: str
     intensity: int = Field(ge=1, le=5)
     confidence: float = Field(ge=0.0, le=1.0)
+    quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
     entities: list[str] = Field(default_factory=list)
     extractor_model: str = ""
     extractor_prompt_version: str = ""

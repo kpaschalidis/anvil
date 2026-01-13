@@ -118,17 +118,26 @@ class Extractor:
 
         data = json.loads(content)
 
+        novelty = self._clamp(data.get("novelty", 0.5), 0.0, 1.0)
+
         snippets: list[PainSnippet] = []
         for s in data.get("snippets", []):
             try:
+                intensity = int(self._clamp(s.get("intensity", 3), 1, 5))
+                confidence = self._clamp(s.get("confidence", 0.5), 0.0, 1.0)
                 snippet = PainSnippet(
                     snippet_id=generate_id(),
                     doc_id=doc_id,
                     excerpt=s.get("excerpt", ""),
                     pain_statement=s.get("pain_statement", ""),
                     signal_type=self._validate_signal_type(s.get("signal_type", "complaint")),
-                    intensity=self._clamp(s.get("intensity", 3), 1, 5),
-                    confidence=self._clamp(s.get("confidence", 0.5), 0.0, 1.0),
+                    intensity=intensity,
+                    confidence=confidence,
+                    quality_score=self._quality_score(
+                        intensity=intensity,
+                        confidence=confidence,
+                        novelty=novelty,
+                    ),
                     entities=s.get("entities", []),
                     extractor_model=self.model,
                     extractor_prompt_version=self.prompt_version,
@@ -146,8 +155,6 @@ class Extractor:
         follow_up_queries = data.get("follow_up_queries", [])
         if not isinstance(follow_up_queries, list):
             follow_up_queries = []
-
-        novelty = self._clamp(data.get("novelty", 0.5), 0.0, 1.0)
 
         if self.snippet_validator:
             snippets, dropped = self.snippet_validator.validate(snippets)
@@ -177,6 +184,14 @@ class Extractor:
             return max(min_val, min(max_val, float(value)))
         except (TypeError, ValueError):
             return (min_val + max_val) / 2
+
+    def _quality_score(self, *, intensity: int, confidence: float, novelty: float) -> float:
+        normalized_intensity = self._clamp((intensity - 1) / 4, 0.0, 1.0)
+        return self._clamp(
+            (normalized_intensity * 0.4) + (confidence * 0.4) + (novelty * 0.2),
+            0.0,
+            1.0,
+        )
 
     def _empty_result(self, *, error_kind: str | None = None) -> ExtractionResult:
         return ExtractionResult(
