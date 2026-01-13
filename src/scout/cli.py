@@ -208,6 +208,22 @@ def cmd_export(args: argparse.Namespace) -> int:
         print(f"Exported to: {output_file}")
         print(f"  Documents: {len(docs)}")
         print(f"  Snippets: {len(snippets)}")
+    elif args.format == "csv":
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / "snippets.csv"
+        storage.export_csv(output_file)
+        print(f"Exported to: {output_file}")
+        print(f"  Snippets: {storage.get_snippet_count()}")
+    elif args.format == "markdown":
+        output_dir.mkdir(parents=True, exist_ok=True)
+        manager = SessionManager(data_dir)
+        session = manager.load_session(args.session_id)
+        if not session:
+            print(f"Session {args.session_id} not found.")
+            return 1
+        output_file = output_dir / "summary.md"
+        storage.export_markdown_summary(output_file, session=session)
+        print(f"Exported to: {output_file}")
     else:
         print(f"Unknown format: {args.format}")
         return 1
@@ -312,7 +328,7 @@ def main() -> int:
     export_parser.add_argument(
         "--format",
         "-f",
-        choices=["jsonl", "json"],
+        choices=["jsonl", "json", "csv", "markdown"],
         default="jsonl",
         help="Export format",
     )

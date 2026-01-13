@@ -5,6 +5,7 @@ import tempfile
 import shutil
 import logging
 import threading
+import csv
 from pathlib import Path
 from datetime import datetime
 from typing import Iterator
@@ -282,6 +283,75 @@ class Storage:
             "snippets": target_dir / "snippets.jsonl",
             "events": target_dir / "events.jsonl",
         }
+
+    def export_csv(self, output_file: Path) -> Path:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "snippet_id",
+                    "doc_id",
+                    "pain_statement",
+                    "signal_type",
+                    "intensity",
+                    "confidence",
+                    "quality_score",
+                    "entities",
+                    "excerpt",
+                    "extracted_at",
+                ]
+            )
+            for snippet in self.get_all_snippets():
+                writer.writerow(
+                    [
+                        snippet.snippet_id,
+                        snippet.doc_id,
+                        snippet.pain_statement,
+                        snippet.signal_type,
+                        snippet.intensity,
+                        snippet.confidence,
+                        snippet.quality_score,
+                        "|".join(snippet.entities),
+                        snippet.excerpt,
+                        snippet.extracted_at.isoformat(),
+                    ]
+                )
+        return output_file
+
+    def export_markdown_summary(self, output_file: Path, *, session: "SessionState") -> Path:
+        from scout.models import SessionState
+
+        if not isinstance(session, SessionState):
+            raise TypeError("session must be SessionState")
+
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        entities = self.get_all_entities()
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(f"## Session\n\n")
+            f.write(f"- ID: {session.session_id}\n")
+            f.write(f"- Topic: {session.topic}\n")
+            f.write(f"- Status: {session.status}\n")
+            f.write(f"- Created: {session.created_at}\n")
+            f.write(f"- Updated: {session.updated_at}\n\n")
+
+            f.write("## Stats\n\n")
+            f.write(f"- Documents: {self.get_document_count()}\n")
+            f.write(f"- Snippets: {self.get_snippet_count()}\n")
+            f.write(f"- Iterations: {session.stats.iterations}\n")
+            f.write(f"- Avg novelty: {session.stats.avg_novelty:.2f}\n")
+            if session.stats.total_cost_usd:
+                f.write(f"- Cost: ${session.stats.total_cost_usd:.4f}\n")
+                f.write(f"- Tokens: {session.stats.total_tokens}\n")
+            f.write("\n")
+
+            f.write("## Entities\n\n")
+            for e in entities[:100]:
+                f.write(f"- {e}\n")
+            if len(entities) > 100:
+                f.write(f"\n... and {len(entities) - 100} more\n")
+
+        return output_file
 
 
 def atomic_write_json(filepath: Path, data: dict) -> None:
