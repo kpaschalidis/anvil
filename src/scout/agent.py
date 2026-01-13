@@ -362,7 +362,7 @@ class IngestionAgent:
             self.session.visited_docs.append(ref.ref_id)
             self.session.stats.docs_collected += 1
 
-            logger.debug(f"Saved document {doc.doc_id}: {doc.title[:50]}...")
+            logger.info(f"Saved document {doc.doc_id}: {doc.title[:50]}...")
 
             extract_start = time.monotonic()
             pipeline_result = self.pipeline.process(

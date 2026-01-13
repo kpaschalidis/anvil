@@ -109,7 +109,7 @@ class ParallelExecutor:
                             )
                         )
                         self.success_tracker.record(True)
-                        logger.debug(
+                        logger.info(
                             f"Task {task.task_id} returned {len(page.items)} results"
                         )
                     except TimeoutError:

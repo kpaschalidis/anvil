@@ -246,7 +246,7 @@ class HackerNewsSource:
             next_cursor = f"algolia:{page_num + 1}"
             exhausted = False
 
-        logger.debug(
+        logger.info(
             f"Algolia search '{task.query}' page {page_num}: "
             f"{len(refs)} hits, exhausted={exhausted}, total={nb_hits}"
         )
@@ -297,7 +297,7 @@ class HackerNewsSource:
             next_cursor = f"firebase:{start_idx + task.budget}"
             exhausted = False
 
-        logger.debug(
+        logger.info(
             f"Listing {listing_type} from {start_idx}: "
             f"{len(refs)} items, exhausted={exhausted}, total={len(all_ids)}"
         )

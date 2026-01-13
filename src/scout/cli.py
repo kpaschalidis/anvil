@@ -82,13 +82,6 @@ def setup_logging(verbose: bool = False, quiet: bool = False, log_format: str = 
     logging.getLogger("praw").setLevel(logging.WARNING)
     logging.getLogger("prawcore").setLevel(logging.WARNING)
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-    
-    if quiet:
-        logging.getLogger("scout.agent").setLevel(logging.WARNING)
-        logging.getLogger("scout.parallel").setLevel(logging.WARNING)
-        logging.getLogger("scout.sources").setLevel(logging.WARNING)
-        logging.getLogger("scout.extract").setLevel(logging.WARNING)
-        logging.getLogger("scout.complexity").setLevel(logging.WARNING)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -178,10 +171,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     def on_progress(info: ProgressInfo) -> None:
         pct = (info.iteration / max(1, info.max_iterations)) * 100
+        cost_str = f" cost=${info.total_cost_usd:.4f}" if info.total_cost_usd else ""
         
         if args.verbose:
             if info.iteration % 5 == 0:
-                cost_str = f" cost=${info.total_cost_usd:.4f}" if info.total_cost_usd else ""
                 logger.info(
                     f"Progress: [{pct:3.0f}%] it={info.iteration}/{info.max_iterations} "
                     f"docs={info.docs_collected}/{info.max_documents} "
@@ -190,21 +183,29 @@ def cmd_run(args: argparse.Namespace) -> int:
                 )
             return
         
-        line = (
-            f"\r[{pct:3.0f}%] it={info.iteration}/{info.max_iterations} "
-            f"docs={info.docs_collected}/{info.max_documents} "
-            f"snips={info.snippets_extracted} tasks={info.tasks_remaining} "
-            f"nov={info.avg_novelty:.2f}"
-        )
-        if info.total_cost_usd:
-            line += f" cost=${info.total_cost_usd:.4f}"
-        print(line, end="", flush=True)
+        if args.quiet:
+            line = (
+                f"\r[{pct:3.0f}%] it={info.iteration}/{info.max_iterations} "
+                f"docs={info.docs_collected}/{info.max_documents} "
+                f"snips={info.snippets_extracted} tasks={info.tasks_remaining} "
+                f"nov={info.avg_novelty:.2f}{cost_str}"
+            )
+            print(line, end="", flush=True)
+        else:
+            if info.iteration % 5 == 0 or info.iteration == 1:
+                line = (
+                    f"[{pct:3.0f}%] it={info.iteration}/{info.max_iterations} "
+                    f"docs={info.docs_collected}/{info.max_documents} "
+                    f"snips={info.snippets_extracted} tasks={info.tasks_remaining} "
+                    f"nov={info.avg_novelty:.2f}{cost_str}"
+                )
+                print(line)
 
     agent = IngestionAgent(session, sources, config, on_progress=on_progress)
 
     try:
         agent.run()
-        if not args.verbose and not args.quiet:
+        if args.quiet:
             print()
         print("\n=== Session Complete ===")
         print(f"Session ID: {session.session_id}")
