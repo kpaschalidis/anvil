@@ -288,7 +288,7 @@ Be concise and helpful."""
 
     def _handle_command(self, command: str) -> bool:
         parts = command.split(maxsplit=1)
-        cmd = parts[0].lstrip("/")
+        cmd = parts[0].lstrip("/").replace("-", "_")
         args = parts[1] if len(parts) > 1 else ""
 
         handler = getattr(self, f"cmd_{cmd}", None)
