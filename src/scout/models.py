@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Generic, TypeVar
 from pydantic import BaseModel, Field
 
@@ -9,7 +9,7 @@ def generate_id() -> str:
 
 
 def utc_now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 class RawDocument(BaseModel):

@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import tempfile
 import shutil
@@ -281,7 +282,7 @@ def atomic_write_json(filepath: Path, data: dict) -> None:
         suffix=".tmp"
     )
     try:
-        with open(temp_fd, "w", encoding="utf-8") as f:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, default=str)
         shutil.move(temp_path, filepath)
         logger.debug(f"Atomically wrote {filepath}")
