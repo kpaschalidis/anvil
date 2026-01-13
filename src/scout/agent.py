@@ -24,6 +24,7 @@ from scout.sources.base import Source
 from scout.validation import SnippetValidator
 from scout.circuit_breaker import CircuitBreaker
 from scout.pipeline import ExtractionPipeline
+from scout.progress import ProgressInfo
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,13 @@ class IngestionAgent:
         session: SessionState,
         sources: list[Source],
         config: ScoutConfig,
+        *,
+        on_progress: Callable[[ProgressInfo], None] | None = None,
     ):
         self.session = session
         self.sources = {s.name: s for s in sources}
         self.config = config
+        self.on_progress = on_progress
         self.cost_tracker = CostTracker()
         self.storage = Storage(session.session_id, config.data_dir)
         self.session_manager = SessionManager(config.data_dir)
@@ -88,6 +92,7 @@ class IngestionAgent:
             while self._should_continue():
                 self._run_iteration()
                 self._save_state()
+                self._emit_progress()
 
             self._finalize()
 
@@ -512,6 +517,21 @@ class IngestionAgent:
         self.session.stats.extraction_calls = totals.calls_by_kind.get("extraction", 0)
         self.session.stats.complexity_calls = totals.calls_by_kind.get("complexity", 0)
         self.session_manager.save_session(self.session)
+
+    def _emit_progress(self) -> None:
+        if not self.on_progress:
+            return
+        info = ProgressInfo(
+            iteration=self.session.stats.iterations,
+            max_iterations=self.session.max_iterations,
+            docs_collected=self.session.stats.docs_collected,
+            max_documents=self.config.max_documents,
+            snippets_extracted=self.session.stats.snippets_extracted,
+            tasks_remaining=len(self.session.task_queue),
+            avg_novelty=self._avg_novelty(),
+            total_cost_usd=self.session.stats.total_cost_usd,
+        )
+        self.on_progress(info)
 
     def _log_event(
         self,

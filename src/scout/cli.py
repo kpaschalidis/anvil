@@ -17,6 +17,7 @@ from scout.session import SessionManager, load_or_create_session, SessionError
 from scout.agent import IngestionAgent
 from scout.sources.registry import load_source_classes
 from scout.storage import Storage
+from scout.progress import ProgressInfo
 
 def available_sources() -> set[str]:
     return set(load_source_classes().keys())
@@ -141,10 +142,26 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("Error: No sources configured.")
         return 1
 
-    agent = IngestionAgent(session, sources, config)
+    def on_progress(info: ProgressInfo) -> None:
+        if args.verbose:
+            return
+        pct = (info.iteration / max(1, info.max_iterations)) * 100
+        line = (
+            f"\r[{pct:3.0f}%] it={info.iteration}/{info.max_iterations} "
+            f"docs={info.docs_collected}/{info.max_documents} "
+            f"snips={info.snippets_extracted} tasks={info.tasks_remaining} "
+            f"nov={info.avg_novelty:.2f}"
+        )
+        if info.total_cost_usd:
+            line += f" cost=${info.total_cost_usd:.4f}"
+        print(line, end="", flush=True)
+
+    agent = IngestionAgent(session, sources, config, on_progress=on_progress)
 
     try:
         agent.run()
+        if not args.verbose:
+            print()
         print("\n=== Session Complete ===")
         print(f"Session ID: {session.session_id}")
         print(f"Documents: {session.stats.docs_collected}")
