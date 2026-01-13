@@ -88,15 +88,6 @@ class IngestionAgent:
 
         for source_name, source in self.sources.items():
             try:
-                entities = source.discover(self.session.topic, limit=5)
-                for entity in entities[:3]:
-                    self._add_search_task(
-                        source_name, entity.name, "listing_top", time_filter="month"
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to discover entities from {source_name}: {e}")
-
-            try:
                 adapted_tasks = source.adapt_queries(queries, self.session.topic)
                 for task in adapted_tasks:
                     if task.task_id not in [t.task_id for t in self.session.task_queue]:

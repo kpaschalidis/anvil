@@ -173,21 +173,6 @@ class HackerNewsSource:
                 )
             )
 
-        tasks.append(
-            SearchTask(
-                source="hackernews",
-                source_entity="ask",
-                mode="listing_ask",
-            )
-        )
-        tasks.append(
-            SearchTask(
-                source="hackernews",
-                source_entity="show",
-                mode="listing_show",
-            )
-        )
-
         return tasks
 
     def discover(self, topic: str, limit: int = 10) -> list[SourceEntity]:

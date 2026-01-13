@@ -66,13 +66,14 @@ class TestHackerNewsSource:
     def test_adapt_queries(self, source):
         queries = ["CRM problems", "sales software"]
         tasks = source.adapt_queries(queries, "CRM pain points")
-        
-        assert len(tasks) > 0
+
+        assert len(tasks) == 4
         search_tasks = [t for t in tasks if t.mode == "search"]
-        listing_tasks = [t for t in tasks if t.mode.startswith("listing_")]
-        
         assert len(search_tasks) == 4
-        assert len(listing_tasks) == 2
+        
+        all_queries = [t.query for t in tasks]
+        assert "CRM problems" in all_queries
+        assert "sales software" in all_queries
 
 
 class TestAlgoliaSearch:
