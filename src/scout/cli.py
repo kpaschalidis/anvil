@@ -76,10 +76,16 @@ def setup_logging(verbose: bool = False, quiet: bool = False, log_format: str = 
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
+    
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("praw").setLevel(logging.WARNING)
     logging.getLogger("prawcore").setLevel(logging.WARNING)
+    
+    if not verbose and not quiet:
+        logging.getLogger("scout.agent").setLevel(logging.WARNING)
+        logging.getLogger("scout.parallel").setLevel(logging.WARNING)
+        logging.getLogger("scout.sources").setLevel(logging.WARNING)
 
 
 def cmd_run(args: argparse.Namespace) -> int:

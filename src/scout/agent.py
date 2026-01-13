@@ -74,7 +74,9 @@ class IngestionAgent:
         self.recent_empty_extractions: deque[bool] = deque(
             maxlen=self.config.saturation_empty_extractions_limit
         )
-        self.query_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"docs": 0, "snippets": 0})
+        self.query_stats: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"docs": 0, "snippets": 0}
+        )
 
     def run(self) -> None:
         logger.info(f"Starting ingestion for session {self.session.session_id}")
@@ -267,7 +269,11 @@ class IngestionAgent:
                     self.session.stats.tasks_completed += 1
                     self._log_event(
                         "task_completed",
-                        input={"task_id": task.task_id, "source": task.source, "query": task.query},
+                        input={
+                            "task_id": task.task_id,
+                            "source": task.source,
+                            "query": task.query,
+                        },
                         output={
                             "refs_found": len(page.items),
                             "exhausted": page.exhausted,
@@ -279,11 +285,19 @@ class IngestionAgent:
                     logger.error(f"Task {task.task_id} failed: {result.error}")
                     self._log_event(
                         "task_failed",
-                        input={"task_id": task.task_id, "source": task.source, "query": task.query},
+                        input={
+                            "task_id": task.task_id,
+                            "source": task.source,
+                            "query": task.query,
+                        },
                         decision=result.error or "Unknown error",
                         metrics={
                             "duration_ms": result.duration_ms,
-                            "error_type": "timeout" if result.error == "Timeout" else "search_error",
+                            "error_type": (
+                                "timeout"
+                                if result.error == "Timeout"
+                                else "search_error"
+                            ),
                             "error_stage": "search",
                         },
                     )
@@ -313,7 +327,9 @@ class IngestionAgent:
         candidates.sort(key=lambda x: x[0], reverse=True)
         picked = [t for _, t in candidates[:count]]
         picked_ids = {t.task_id for t in picked}
-        self.session.task_queue = [t for t in self.session.task_queue if t.task_id not in picked_ids]
+        self.session.task_queue = [
+            t for t in self.session.task_queue if t.task_id not in picked_ids
+        ]
         return picked
 
     def _task_score(self, task: SearchTask) -> float:
@@ -387,7 +403,9 @@ class IngestionAgent:
                     [s.pain_statement for s in result.snippets]
                 )
                 if len(self.session.knowledge) > KNOWLEDGE_CONTEXT_SIZE * 5:
-                    self.session.knowledge = self.session.knowledge[-KNOWLEDGE_CONTEXT_SIZE * 5:]
+                    self.session.knowledge = self.session.knowledge[
+                        -KNOWLEDGE_CONTEXT_SIZE * 5 :
+                    ]
 
                 self._add_follow_up_tasks(result, task.source)
 
@@ -512,9 +530,10 @@ class IngestionAgent:
         if len(self.session.novelty_history) < self.config.saturation_window:
             return False
 
-        if (
-            len(self.recent_empty_extractions) == self.recent_empty_extractions.maxlen
-            and all(self.recent_empty_extractions)
+        if len(
+            self.recent_empty_extractions
+        ) == self.recent_empty_extractions.maxlen and all(
+            self.recent_empty_extractions
         ):
             return True
 

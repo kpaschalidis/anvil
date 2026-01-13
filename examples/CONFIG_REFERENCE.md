@@ -107,8 +107,8 @@ Pre-configured presets for common use cases.
 ### Standard Profile (default)
 ```python
 {
-    "max_iterations": 60,
-    "max_documents": 200,
+    "max_iterations": 2,
+    "max_documents": 20,
     "saturation_threshold": 0.2,
     "parallel_workers": 5,
 }
