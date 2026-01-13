@@ -4,6 +4,7 @@ import os
 import sys
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -20,13 +21,32 @@ from scout.storage import Storage
 AVAILABLE_SOURCES = ["hackernews", "reddit"]
 
 
-def setup_logging(verbose: bool = False) -> None:
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat()
+        payload = {
+            "ts": ts,
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str)
+
+
+def setup_logging(verbose: bool = False, log_format: str = "text") -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_format == "json":
+        handlers[0].setFormatter(JsonFormatter())
+        logging.basicConfig(level=level, handlers=handlers)
+    else:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("praw").setLevel(logging.WARNING)
@@ -34,7 +54,7 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose)
+    setup_logging(args.verbose, args.log_format)
     logger = logging.getLogger(__name__)
 
     source_names = args.source.split(",") if args.source else ["hackernews"]
@@ -122,7 +142,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose)
+    setup_logging(args.verbose, args.log_format)
 
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     manager = SessionManager(data_dir)
@@ -148,7 +168,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_export(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose)
+    setup_logging(args.verbose, args.log_format)
     logger = logging.getLogger(__name__)
 
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
@@ -192,7 +212,7 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose)
+    setup_logging(args.verbose, args.log_format)
 
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     manager = SessionManager(data_dir)
@@ -241,6 +261,12 @@ def main() -> int:
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
+    parser.add_argument(
+        "--log-format",
+        choices=["text", "json"],
+        default="text",
+        help="Log format (default: text)",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Commands")
