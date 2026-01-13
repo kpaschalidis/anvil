@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import shutil
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Iterator
@@ -67,6 +68,7 @@ class Storage:
         self.session_dir = Path(data_dir) / session_id
         self.db_path = self.session_dir / "session.db"
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.Lock()
         self._ensure_directory()
         self._init_db()
 
@@ -100,78 +102,94 @@ class Storage:
         return self._conn
 
     def close(self) -> None:
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(sql, params)
+            return cursor.fetchone()
+
+    def _fetchall(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute(sql, params)
+            return cursor.fetchall()
 
     def save_document(self, doc: RawDocument) -> None:
-        cursor = self.conn.cursor()
         try:
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO documents 
-                (doc_id, source, source_entity, url, permalink, retrieved_at, 
-                 published_at, title, raw_text, author, score, num_comments, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    doc.doc_id,
-                    doc.source,
-                    doc.source_entity,
-                    doc.url,
-                    doc.permalink,
-                    doc.retrieved_at.isoformat(),
-                    doc.published_at.isoformat() if doc.published_at else None,
-                    doc.title,
-                    doc.raw_text,
-                    doc.author,
-                    doc.score,
-                    doc.num_comments,
-                    json.dumps(doc.metadata),
-                ),
-            )
-            self.conn.commit()
-            self._append_jsonl("raw.jsonl", doc.model_dump(mode="json"))
+            with self._lock:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO documents 
+                    (doc_id, source, source_entity, url, permalink, retrieved_at, 
+                     published_at, title, raw_text, author, score, num_comments, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        doc.doc_id,
+                        doc.source,
+                        doc.source_entity,
+                        doc.url,
+                        doc.permalink,
+                        doc.retrieved_at.isoformat(),
+                        doc.published_at.isoformat() if doc.published_at else None,
+                        doc.title,
+                        doc.raw_text,
+                        doc.author,
+                        doc.score,
+                        doc.num_comments,
+                        json.dumps(doc.metadata),
+                    ),
+                )
+                self.conn.commit()
+                self._append_jsonl("raw.jsonl", doc.model_dump(mode="json"))
             logger.debug(f"Saved document {doc.doc_id}")
         except sqlite3.Error as e:
             logger.error(f"Failed to save document {doc.doc_id}: {e}")
             raise StorageError(f"Failed to save document: {e}") from e
 
     def save_snippet(self, snippet: PainSnippet) -> None:
-        cursor = self.conn.cursor()
         try:
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO snippets 
-                (snippet_id, doc_id, excerpt, pain_statement, signal_type, intensity,
-                 confidence, entities, extractor_model, extractor_prompt_version, 
-                 extracted_at, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    snippet.snippet_id,
-                    snippet.doc_id,
-                    snippet.excerpt,
-                    snippet.pain_statement,
-                    snippet.signal_type,
-                    snippet.intensity,
-                    snippet.confidence,
-                    json.dumps(snippet.entities),
-                    snippet.extractor_model,
-                    snippet.extractor_prompt_version,
-                    snippet.extracted_at.isoformat(),
-                    json.dumps(snippet.metadata),
-                ),
-            )
-            self.conn.commit()
-            self._append_jsonl("snippets.jsonl", snippet.model_dump(mode="json"))
+            with self._lock:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO snippets 
+                    (snippet_id, doc_id, excerpt, pain_statement, signal_type, intensity,
+                     confidence, entities, extractor_model, extractor_prompt_version, 
+                     extracted_at, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        snippet.snippet_id,
+                        snippet.doc_id,
+                        snippet.excerpt,
+                        snippet.pain_statement,
+                        snippet.signal_type,
+                        snippet.intensity,
+                        snippet.confidence,
+                        json.dumps(snippet.entities),
+                        snippet.extractor_model,
+                        snippet.extractor_prompt_version,
+                        snippet.extracted_at.isoformat(),
+                        json.dumps(snippet.metadata),
+                    ),
+                )
+                self.conn.commit()
+                self._append_jsonl("snippets.jsonl", snippet.model_dump(mode="json"))
             logger.debug(f"Saved snippet {snippet.snippet_id}")
         except sqlite3.Error as e:
             logger.error(f"Failed to save snippet {snippet.snippet_id}: {e}")
             raise StorageError(f"Failed to save snippet: {e}") from e
 
     def log_event(self, event: Event) -> None:
-        self._append_jsonl("events.jsonl", event.model_dump(mode="json"))
+        with self._lock:
+            self._append_jsonl("events.jsonl", event.model_dump(mode="json"))
         logger.debug(f"Logged event {event.kind}: {event.event_id}")
 
     def _append_jsonl(self, filename: str, data: dict) -> None:
@@ -184,53 +202,45 @@ class Storage:
             raise StorageError(f"Failed to append to {filename}: {e}") from e
 
     def get_document(self, doc_id: str) -> RawDocument | None:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,))
-        row = cursor.fetchone()
+        row = self._fetchone("SELECT * FROM documents WHERE doc_id = ?", (doc_id,))
         if not row:
             return None
         return self._row_to_document(row)
 
     def get_all_documents(self) -> Iterator[RawDocument]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM documents ORDER BY retrieved_at DESC")
-        for row in cursor:
+        rows = self._fetchall("SELECT * FROM documents ORDER BY retrieved_at DESC")
+        for row in rows:
             yield self._row_to_document(row)
 
     def get_document_count(self) -> int:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM documents")
-        return cursor.fetchone()[0]
+        row = self._fetchone("SELECT COUNT(*) FROM documents")
+        return int(row[0] if row else 0)
 
     def get_snippet_count(self) -> int:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM snippets")
-        return cursor.fetchone()[0]
+        row = self._fetchone("SELECT COUNT(*) FROM snippets")
+        return int(row[0] if row else 0)
 
     def get_snippets_for_document(self, doc_id: str) -> list[PainSnippet]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM snippets WHERE doc_id = ?", (doc_id,))
-        return [self._row_to_snippet(row) for row in cursor]
+        rows = self._fetchall("SELECT * FROM snippets WHERE doc_id = ?", (doc_id,))
+        return [self._row_to_snippet(row) for row in rows]
 
     def get_all_snippets(self) -> Iterator[PainSnippet]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM snippets ORDER BY extracted_at DESC")
-        for row in cursor:
+        rows = self._fetchall("SELECT * FROM snippets ORDER BY extracted_at DESC")
+        for row in rows:
             yield self._row_to_snippet(row)
 
     def get_all_entities(self) -> list[str]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT DISTINCT entities FROM snippets")
         all_entities: set[str] = set()
-        for row in cursor:
+        rows = self._fetchall("SELECT DISTINCT entities FROM snippets")
+        for row in rows:
             entities = json.loads(row[0])
             all_entities.update(entities)
         return sorted(all_entities)
 
     def document_exists(self, doc_id: str) -> bool:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT 1 FROM documents WHERE doc_id = ? LIMIT 1", (doc_id,))
-        return cursor.fetchone() is not None
+        return self._fetchone(
+            "SELECT 1 FROM documents WHERE doc_id = ? LIMIT 1", (doc_id,)
+        ) is not None
 
     def _row_to_document(self, row: sqlite3.Row) -> RawDocument:
         return RawDocument(
