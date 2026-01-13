@@ -81,11 +81,14 @@ def setup_logging(verbose: bool = False, quiet: bool = False, log_format: str = 
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("praw").setLevel(logging.WARNING)
     logging.getLogger("prawcore").setLevel(logging.WARNING)
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     
     if not verbose and not quiet:
         logging.getLogger("scout.agent").setLevel(logging.WARNING)
         logging.getLogger("scout.parallel").setLevel(logging.WARNING)
         logging.getLogger("scout.sources").setLevel(logging.WARNING)
+        logging.getLogger("scout.extract").setLevel(logging.WARNING)
+        logging.getLogger("scout.complexity").setLevel(logging.WARNING)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -162,6 +165,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.extraction_prompt:
         session.extraction_prompt_version = args.extraction_prompt
     config.llm.extraction_prompt_version = session.extraction_prompt_version
+    
+    if config.deep_comments == "always":
+        print("⚠️  Warning: --deep-comments always is SLOW (fetches all comment trees)")
+        print("   Consider using 'auto' (default) for faster runs")
 
     sources = build_sources(config, source_names)
 
