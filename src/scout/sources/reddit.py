@@ -253,7 +253,7 @@ class RedditSource:
             if len(refs) < task.budget:
                 exhausted = True
 
-            logger.info(
+            logger.debug(
                 f"Search task {task.task_id}: found {len(refs)} refs, "
                 f"exhausted={exhausted}, cursor={next_cursor}"
             )

@@ -51,7 +51,8 @@ uv run scout run <topic> [options]
 | `--min-score` | int | 5 | Skip documents with score below N |
 | `--resume, -r` | string | None | Resume session by ID |
 | `--log-format` | `text\|json` | `text` | Log output format |
-| `--verbose` | flag | False | Enable debug logging |
+| `--verbose, -v` | flag | False | Enable debug logging |
+| `--quiet, -q` | flag | False | Minimal logging (warnings only) |
 
 **Examples:**
 

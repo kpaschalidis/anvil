@@ -17,6 +17,24 @@ uv run scout run "enterprise tools" --profile deep
 
 ---
 
+## Logging Modes
+
+```bash
+# Quiet: clean progress bar, warnings/errors only (recommended for production)
+uv run scout run "topic" --quiet
+
+# Normal: INFO logs + progress bar (default)
+uv run scout run "topic"
+
+# Verbose: DEBUG logs + periodic progress (for troubleshooting)
+uv run scout run "topic" --verbose
+
+# JSON logs (for programmatic parsing)
+uv run scout run "topic" --log-format json
+```
+
+---
+
 ## Performance Control
 
 ### Parallel Workers

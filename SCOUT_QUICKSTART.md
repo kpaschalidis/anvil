@@ -33,6 +33,37 @@ uv run scout --help
 
 ## 📖 Usage Examples
 
+### Logging Modes
+
+Scout offers three logging modes:
+
+**Quiet Mode** (`--quiet` or `-q`) - Clean progress bar, minimal noise
+```bash
+uv run scout run "CRM tools" --quiet
+```
+- Only warnings/errors
+- Best for: Production runs, clean progress tracking
+
+**Normal Mode** (default) - Balanced monitoring
+```bash
+uv run scout run "CRM tools"
+```
+- INFO-level logs (major events)
+- Progress bar visible between logs
+- Best for: General usage
+
+**Verbose Mode** (`--verbose` or `-v`) - Full debugging detail
+```bash
+uv run scout run "CRM tools" --verbose
+```
+- DEBUG-level logs (every operation)
+- Periodic progress summaries
+- Best for: Troubleshooting, learning how Scout works
+
+**Recommendation**: Use `--quiet` for clean runs, `--verbose` for debugging.
+
+---
+
 ### Example 1: Quick Research (5-10 minutes, ~$0.10)
 
 Find pain points about CRM software on Hacker News:

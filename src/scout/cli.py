@@ -58,8 +58,14 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-def setup_logging(verbose: bool = False, log_format: str = "text") -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+def setup_logging(verbose: bool = False, quiet: bool = False, log_format: str = "text") -> None:
+    if quiet:
+        level = logging.WARNING
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+    
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     if log_format == "json":
         handlers[0].setFormatter(JsonFormatter())
@@ -77,7 +83,7 @@ def setup_logging(verbose: bool = False, log_format: str = "text") -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose, args.log_format)
+    setup_logging(args.verbose, args.quiet, args.log_format)
     logger = logging.getLogger(__name__)
 
     source_names = args.source.split(",") if args.source else ["hackernews"]
@@ -158,9 +164,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     def on_progress(info: ProgressInfo) -> None:
-        if args.verbose:
-            return
         pct = (info.iteration / max(1, info.max_iterations)) * 100
+        
+        if args.verbose:
+            if info.iteration % 5 == 0:
+                cost_str = f" cost=${info.total_cost_usd:.4f}" if info.total_cost_usd else ""
+                logger.info(
+                    f"Progress: [{pct:3.0f}%] it={info.iteration}/{info.max_iterations} "
+                    f"docs={info.docs_collected}/{info.max_documents} "
+                    f"snips={info.snippets_extracted} tasks={info.tasks_remaining} "
+                    f"nov={info.avg_novelty:.2f}{cost_str}"
+                )
+            return
+        
         line = (
             f"\r[{pct:3.0f}%] it={info.iteration}/{info.max_iterations} "
             f"docs={info.docs_collected}/{info.max_documents} "
@@ -175,7 +191,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     try:
         agent.run()
-        if not args.verbose:
+        if not args.verbose and not args.quiet:
             print()
         print("\n=== Session Complete ===")
         print(f"Session ID: {session.session_id}")
@@ -197,7 +213,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose, args.log_format)
+    setup_logging(args.verbose, getattr(args, "quiet", False), args.log_format)
 
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     manager = SessionManager(data_dir)
@@ -223,7 +239,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_export(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose, args.log_format)
+    setup_logging(args.verbose, getattr(args, "quiet", False), args.log_format)
     logger = logging.getLogger(__name__)
 
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
@@ -283,7 +299,7 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose, args.log_format)
+    setup_logging(args.verbose, getattr(args, "quiet", False), args.log_format)
 
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     manager = SessionManager(data_dir)
@@ -326,7 +342,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
 
 def cmd_tag(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose, args.log_format)
+    setup_logging(args.verbose, getattr(args, "quiet", False), args.log_format)
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     manager = SessionManager(data_dir)
     tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
@@ -340,7 +356,7 @@ def cmd_tag(args: argparse.Namespace) -> int:
 
 
 def cmd_clone(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose, args.log_format)
+    setup_logging(args.verbose, getattr(args, "quiet", False), args.log_format)
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     manager = SessionManager(data_dir)
     try:
@@ -354,7 +370,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
 
 
 def cmd_archive(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose, args.log_format)
+    setup_logging(args.verbose, getattr(args, "quiet", False), args.log_format)
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     manager = SessionManager(data_dir)
     try:
@@ -367,7 +383,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
-    setup_logging(args.verbose, args.log_format)
+    setup_logging(args.verbose, getattr(args, "quiet", False), args.log_format)
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     session_dir = Path(data_dir) / args.session_id
     filename = {
@@ -401,6 +417,9 @@ def main() -> int:
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="Minimal logging (warnings/errors only, clean progress bar)"
     )
     parser.add_argument(
         "--log-format",
