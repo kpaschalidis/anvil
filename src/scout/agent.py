@@ -21,6 +21,7 @@ from scout.complexity import assess_complexity, ITERATION_BUDGETS
 from scout.parallel import ParallelExecutor, SearchResult
 from scout.sources.base import Source
 from scout.validation import SnippetValidator
+from scout.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,9 @@ class IngestionAgent:
             snippet_validator=self.snippet_validator,
         )
         self.parallel_executor = ParallelExecutor(max_workers=config.parallel_workers)
+        self.circuit_breakers = {
+            source_name: CircuitBreaker() for source_name in self.sources.keys()
+        }
 
     def run(self) -> None:
         logger.info(f"Starting ingestion for session {self.session.session_id}")
@@ -171,6 +175,16 @@ class IngestionAgent:
                 logger.warning(f"Unknown source: {source_name}")
                 continue
 
+            breaker = self.circuit_breakers.setdefault(source_name, CircuitBreaker())
+            if not breaker.can_execute():
+                self.session.task_queue.extend(source_tasks)
+                self._log_event(
+                    "circuit_open",
+                    input={"source": source_name, "task_count": len(source_tasks)},
+                    decision="Circuit open",
+                )
+                continue
+
             for task in source_tasks:
                 self._log_event(
                     "task_started", input={"task_id": task.task_id, "query": task.query}
@@ -186,6 +200,7 @@ class IngestionAgent:
                 page = result.page
 
                 if result.success:
+                    breaker.record_success()
                     for ref in page.items:
                         if ref.ref_id not in self.session.visited_docs:
                             all_refs.append((task, ref))
@@ -215,6 +230,7 @@ class IngestionAgent:
                         },
                     )
                 else:
+                    breaker.record_failure()
                     logger.error(f"Task {task.task_id} failed: {result.error}")
                     self._log_event(
                         "task_failed",
