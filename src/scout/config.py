@@ -2,6 +2,8 @@ import os
 import logging
 from dataclasses import dataclass, field
 
+from scout.filters import FilterConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +65,7 @@ class ScoutConfig:
     parallel_workers: int = 5
     deep_comments: str = "auto"
     max_cost_usd: float | None = None
+    filter: FilterConfig = field(default_factory=FilterConfig)
     reddit: RedditConfig | None = None
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -87,6 +90,10 @@ class ScoutConfig:
             raise ConfigError("parallel_workers must be at least 1")
         if self.max_cost_usd is not None and self.max_cost_usd <= 0:
             raise ConfigError("max_cost_usd must be > 0 when set")
+        if self.filter.min_content_length < 0:
+            raise ConfigError("filter.min_content_length must be >= 0")
+        if self.filter.min_score < 0:
+            raise ConfigError("filter.min_score must be >= 0")
         if self.deep_comments not in ("auto", "always", "never"):
             raise ConfigError("deep_comments must be 'auto', 'always', or 'never'")
         if "reddit" in sources and self.reddit is None:

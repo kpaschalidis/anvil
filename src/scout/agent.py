@@ -3,6 +3,7 @@ from typing import Callable
 
 from scout.config import ScoutConfig
 from scout.cost import CostTracker
+from scout.filters import ContentFilter
 from scout.models import (
     SessionState,
     SearchTask,
@@ -36,6 +37,7 @@ class IngestionAgent:
         self.cost_tracker = CostTracker()
         self.storage = Storage(session.session_id, config.data_dir)
         self.session_manager = SessionManager(config.data_dir)
+        self.content_filter = ContentFilter(config.filter)
         self.extractor = Extractor(
             model=config.llm.extraction_model,
             max_retries=3,
@@ -251,6 +253,16 @@ class IngestionAgent:
             self.session.stats.docs_collected += 1
 
             logger.info(f"Saved document {doc.doc_id}: {doc.title[:50]}...")
+
+            should_extract, reason = self.content_filter.should_extract(doc)
+            if not should_extract:
+                self._log_event(
+                    "doc_filtered",
+                    input={"doc_id": doc.doc_id},
+                    decision=reason,
+                    metrics={"raw_text_len": len(doc.raw_text)},
+                )
+                return
 
             try:
                 result = self.extractor.extract(
