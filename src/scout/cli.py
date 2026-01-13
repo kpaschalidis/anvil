@@ -14,11 +14,32 @@ load_dotenv("src/.env")
 from scout.config import ScoutConfig, ConfigError
 from scout.session import SessionManager, load_or_create_session, SessionError
 from scout.agent import IngestionAgent
-from scout.sources.reddit import RedditSource
-from scout.sources.hackernews import HackerNewsSource
+from scout.sources.registry import load_source_classes
 from scout.storage import Storage
 
-AVAILABLE_SOURCES = ["hackernews", "reddit"]
+def available_sources() -> set[str]:
+    return set(load_source_classes().keys())
+
+
+def build_sources(config: ScoutConfig, names: list[str]):
+    classes = load_source_classes()
+    sources = []
+    for name in names:
+        cls = classes.get(name)
+        if not cls:
+            continue
+        if name == "hackernews":
+            sources.append(cls(config.hackernews))
+        elif name == "reddit":
+            if config.reddit is None:
+                continue
+            sources.append(cls(config.reddit))
+        else:
+            try:
+                sources.append(cls())
+            except Exception:
+                continue
+    return sources
 
 
 class JsonFormatter(logging.Formatter):
@@ -60,10 +81,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     source_names = args.source.split(",") if args.source else ["hackernews"]
     source_names = [s.strip() for s in source_names]
 
+    avail = available_sources()
     for s in source_names:
-        if s not in AVAILABLE_SOURCES:
+        if s not in avail:
             print(
-                f"Error: Unknown source '{s}'. Available: {', '.join(AVAILABLE_SOURCES)}"
+                f"Error: Unknown source '{s}'. Available: {', '.join(sorted(avail))}"
             )
             return 1
 
@@ -112,11 +134,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         session.extraction_prompt_version = args.extraction_prompt
     config.llm.extraction_prompt_version = session.extraction_prompt_version
 
-    sources = []
-    if "hackernews" in source_names:
-        sources.append(HackerNewsSource(config.hackernews))
-    if "reddit" in source_names and config.reddit:
-        sources.append(RedditSource(config.reddit))
+    sources = build_sources(config, source_names)
 
     if not sources:
         print("Error: No sources configured.")

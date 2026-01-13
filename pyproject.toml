@@ -23,6 +23,10 @@ scout = [
 anvil = "anvil.cli:main"
 scout = "scout.cli:main"
 
+[project.entry-points."scout.sources"]
+hackernews = "scout.sources.hackernews:HackerNewsSource"
+reddit = "scout.sources.reddit:RedditSource"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
