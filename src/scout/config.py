@@ -71,7 +71,9 @@ class ScoutConfig:
     deep_comments: str = "auto"
     max_cost_usd: float | None = None
     filter: FilterConfig = field(default_factory=FilterConfig)
-    snippet_validation: SnippetValidationConfig = field(default_factory=SnippetValidationConfig)
+    snippet_validation: SnippetValidationConfig = field(
+        default_factory=SnippetValidationConfig
+    )
     reddit: RedditConfig | None = None
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -85,11 +87,13 @@ class ScoutConfig:
         return cls(reddit=reddit_config)
 
     @classmethod
-    def from_profile(cls, profile: str, sources: list[str] | None = None) -> "ScoutConfig":
+    def from_profile(
+        cls, profile: str, sources: list[str] | None = None
+    ) -> "ScoutConfig":
         profiles = {
             "quick": {
                 "max_iterations": 5,
-                "max_documents": 20,
+                "max_documents": 200,
                 "saturation_threshold": 0.5,
                 "parallel_workers": 5,
                 "deep_comments": "never",
@@ -126,7 +130,9 @@ class ScoutConfig:
         if self.saturation_empty_extractions_limit < 1:
             raise ConfigError("saturation_empty_extractions_limit must be at least 1")
         if not 0 <= self.saturation_signal_diversity_threshold <= 1:
-            raise ConfigError("saturation_signal_diversity_threshold must be between 0 and 1")
+            raise ConfigError(
+                "saturation_signal_diversity_threshold must be between 0 and 1"
+            )
         if self.saturation_min_entities < 0:
             raise ConfigError("saturation_min_entities must be >= 0")
         if self.parallel_workers < 1:
@@ -138,11 +144,15 @@ class ScoutConfig:
         if self.filter.min_score < 0:
             raise ConfigError("filter.min_score must be >= 0")
         if not 0.0 <= self.snippet_validation.min_confidence <= 1.0:
-            raise ConfigError("snippet_validation.min_confidence must be between 0 and 1")
+            raise ConfigError(
+                "snippet_validation.min_confidence must be between 0 and 1"
+            )
         if self.snippet_validation.min_excerpt_length < 0:
             raise ConfigError("snippet_validation.min_excerpt_length must be >= 0")
         if self.snippet_validation.min_pain_statement_length < 0:
-            raise ConfigError("snippet_validation.min_pain_statement_length must be >= 0")
+            raise ConfigError(
+                "snippet_validation.min_pain_statement_length must be >= 0"
+            )
         if self.deep_comments not in ("auto", "always", "never"):
             raise ConfigError("deep_comments must be 'auto', 'always', or 'never'")
         from scout.prompts import EXTRACTION_PROMPTS

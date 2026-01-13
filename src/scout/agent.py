@@ -366,7 +366,7 @@ class IngestionAgent:
 
             # TODO: EXTRACTION DISABLED FOR TESTING - Just collecting raw documents for now
             # We can process them separately later. Uncomment below to re-enable extraction.
-            
+
             # extract_start = time.monotonic()
             # pipeline_result = self.pipeline.process(
             #     doc,
