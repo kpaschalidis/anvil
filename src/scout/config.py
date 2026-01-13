@@ -64,6 +64,9 @@ class ScoutConfig:
     max_documents: int = 200
     saturation_threshold: float = 0.2
     saturation_window: int = 10
+    saturation_empty_extractions_limit: int = 5
+    saturation_signal_diversity_threshold: float = 0.6
+    saturation_min_entities: int = 20
     parallel_workers: int = 5
     deep_comments: str = "auto"
     max_cost_usd: float | None = None
@@ -89,6 +92,12 @@ class ScoutConfig:
             raise ConfigError("max_documents must be at least 1")
         if not 0 <= self.saturation_threshold <= 1:
             raise ConfigError("saturation_threshold must be between 0 and 1")
+        if self.saturation_empty_extractions_limit < 1:
+            raise ConfigError("saturation_empty_extractions_limit must be at least 1")
+        if not 0 <= self.saturation_signal_diversity_threshold <= 1:
+            raise ConfigError("saturation_signal_diversity_threshold must be between 0 and 1")
+        if self.saturation_min_entities < 0:
+            raise ConfigError("saturation_min_entities must be >= 0")
         if self.parallel_workers < 1:
             raise ConfigError("parallel_workers must be at least 1")
         if self.max_cost_usd is not None and self.max_cost_usd <= 0:

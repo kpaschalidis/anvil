@@ -1,4 +1,5 @@
 import logging
+from collections import Counter, deque
 from typing import Callable
 
 from scout.config import ScoutConfig
@@ -52,6 +53,11 @@ class IngestionAgent:
         self.circuit_breakers = {
             source_name: CircuitBreaker() for source_name in self.sources.keys()
         }
+        self.entity_counts: Counter[str] = Counter()
+        self.signal_type_counts: Counter[str] = Counter()
+        self.recent_empty_extractions: deque[bool] = deque(
+            maxlen=self.config.saturation_empty_extractions_limit
+        )
 
     def run(self) -> None:
         logger.info(f"Starting ingestion for session {self.session.session_id}")
@@ -294,6 +300,9 @@ class IngestionAgent:
                 for snippet in result.snippets:
                     self.storage.save_snippet(snippet)
                     self.session.stats.snippets_extracted += 1
+                    for entity in snippet.entities:
+                        self.entity_counts[entity] += 1
+                    self.signal_type_counts[snippet.signal_type] += 1
 
                 self.session.knowledge.extend(
                     [s.pain_statement for s in result.snippets]
@@ -302,6 +311,7 @@ class IngestionAgent:
                 self._add_follow_up_tasks(result, task.source)
 
                 self.session.novelty_history.append(result.novelty)
+                self.recent_empty_extractions.append(len(result.snippets) == 0)
 
                 self._log_event(
                     "extraction_done",
@@ -378,7 +388,12 @@ class IngestionAgent:
             self._log_event(
                 "stop",
                 decision="Saturation detected",
-                metrics={"avg_novelty": self._avg_novelty()},
+                metrics={
+                    "avg_novelty": self._avg_novelty(),
+                    "entity_count": len(self.entity_counts),
+                    "signal_diversity": self._signal_diversity(),
+                    "empty_extractions_window": list(self.recent_empty_extractions),
+                },
             )
             return False
 
@@ -388,8 +403,28 @@ class IngestionAgent:
         if len(self.session.novelty_history) < self.config.saturation_window:
             return False
 
+        if (
+            len(self.recent_empty_extractions) == self.recent_empty_extractions.maxlen
+            and all(self.recent_empty_extractions)
+        ):
+            return True
+
         avg = self._avg_novelty()
-        return avg < self.config.saturation_threshold
+        if avg >= self.config.saturation_threshold:
+            return False
+
+        entity_count = len(self.entity_counts)
+        signal_diversity = self._signal_diversity()
+        if entity_count < self.config.saturation_min_entities:
+            return False
+        return signal_diversity >= self.config.saturation_signal_diversity_threshold
+
+    def _signal_diversity(self) -> float:
+        valid = 9
+        if not self.signal_type_counts:
+            return 0.0
+        unique = len([k for k, v in self.signal_type_counts.items() if v > 0])
+        return unique / valid
 
     def _avg_novelty(self) -> float:
         if not self.session.novelty_history:
