@@ -55,6 +55,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             config.max_iterations = args.max_iterations
         if args.max_documents:
             config.max_documents = args.max_documents
+        if args.max_cost:
+            config.max_cost_usd = args.max_cost
 
     except ConfigError as e:
         logger.error(f"Configuration error: {e}")
@@ -105,6 +107,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Documents: {session.stats.docs_collected}")
         print(f"Snippets: {session.stats.snippets_extracted}")
         print(f"Iterations: {session.stats.iterations}")
+        if session.stats.total_cost_usd:
+            print(f"Cost: ${session.stats.total_cost_usd:.4f}")
+            print(f"Tokens: {session.stats.total_tokens}")
         return 0
 
     except KeyboardInterrupt:
@@ -212,6 +217,12 @@ def cmd_stats(args: argparse.Namespace) -> int:
     print(f"  Iterations: {session.stats.iterations}")
     print(f"  Tasks remaining: {len(session.task_queue)}")
     print(f"  Avg novelty: {session.stats.avg_novelty:.2f}")
+    if session.stats.total_cost_usd:
+        print(f"  Cost: ${session.stats.total_cost_usd:.4f}")
+        print(f"  Tokens: {session.stats.total_tokens}")
+        print(f"  LLM calls: {session.stats.llm_calls}")
+        print(f"    Extraction: {session.stats.extraction_calls}")
+        print(f"    Complexity: {session.stats.complexity_calls}")
     print()
     print("Entities discovered:")
     entities = storage.get_all_entities()
@@ -250,6 +261,11 @@ def main() -> int:
     )
     run_parser.add_argument(
         "--max-documents", "-d", type=int, help="Maximum documents to collect"
+    )
+    run_parser.add_argument(
+        "--max-cost",
+        type=float,
+        help="Maximum estimated LLM cost in USD (stop when reached)",
     )
     run_parser.set_defaults(func=cmd_run)
 

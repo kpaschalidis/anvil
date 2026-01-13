@@ -2,6 +2,7 @@ import logging
 from typing import Callable
 
 from scout.config import ScoutConfig
+from scout.cost import CostTracker
 from scout.models import (
     SessionState,
     SearchTask,
@@ -32,11 +33,13 @@ class IngestionAgent:
         self.session = session
         self.sources = {s.name: s for s in sources}
         self.config = config
+        self.cost_tracker = CostTracker()
         self.storage = Storage(session.session_id, config.data_dir)
         self.session_manager = SessionManager(config.data_dir)
         self.extractor = Extractor(
             model=config.llm.extraction_model,
             max_retries=3,
+            cost_tracker=self.cost_tracker,
         )
         self.parallel_executor = ParallelExecutor(max_workers=config.parallel_workers)
 
@@ -46,7 +49,9 @@ class IngestionAgent:
 
         if not self.session.complexity:
             complexity = assess_complexity(
-                self.session.topic, self.config.llm.complexity_model
+                self.session.topic,
+                self.config.llm.complexity_model,
+                cost_tracker=self.cost_tracker,
             )
             self.session.complexity = complexity.value
             self.session.max_iterations = ITERATION_BUDGETS[complexity]
@@ -307,6 +312,18 @@ class IngestionAgent:
         return False
 
     def _should_continue(self) -> bool:
+        if (
+            self.config.max_cost_usd is not None
+            and self.session.stats.total_cost_usd >= self.config.max_cost_usd
+        ):
+            logger.info("Stop: Max cost reached")
+            self._log_event(
+                "stop",
+                decision="Max cost reached",
+                metrics={"total_cost_usd": self.session.stats.total_cost_usd},
+            )
+            return False
+
         if not self.session.task_queue:
             logger.info("Stop: Task queue empty")
             self._log_event("stop", decision="Task queue empty")
@@ -358,6 +375,12 @@ class IngestionAgent:
         logger.info(f"Avg novelty: {self.session.stats.avg_novelty:.2f}")
 
     def _save_state(self) -> None:
+        totals = self.cost_tracker.totals()
+        self.session.stats.total_tokens = totals.total_tokens
+        self.session.stats.total_cost_usd = totals.total_cost_usd
+        self.session.stats.llm_calls = totals.calls
+        self.session.stats.extraction_calls = totals.calls_by_kind.get("extraction", 0)
+        self.session.stats.complexity_calls = totals.calls_by_kind.get("complexity", 0)
         self.session_manager.save_session(self.session)
 
     def _log_event(

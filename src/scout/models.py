@@ -111,6 +111,11 @@ class SessionStats(BaseModel):
     tasks_remaining: int = 0
     iterations: int = 0
     avg_novelty: float = 0.0
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
+    llm_calls: int = 0
+    extraction_calls: int = 0
+    complexity_calls: int = 0
 
 
 class SessionState(BaseModel):

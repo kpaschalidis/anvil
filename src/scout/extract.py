@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from common import llm
+from scout.cost import CostTracker, parse_usage
 from scout.models import RawDocument, PainSnippet, ExtractionResult, generate_id, utc_now
 from scout.prompts import EXTRACTION_PROMPT_V1, PROMPT_VERSION
 
@@ -21,11 +22,13 @@ class Extractor:
         prompt_version: str = PROMPT_VERSION,
         max_retries: int = 3,
         retry_delay: float = 2.0,
+        cost_tracker: CostTracker | None = None,
     ):
         self.model = model
         self.prompt_version = prompt_version
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.cost_tracker = cost_tracker
 
     def extract(
         self,
@@ -37,12 +40,14 @@ class Extractor:
 
         for attempt in range(self.max_retries):
             try:
-                response = llm.completion(
+                response, usage = llm.completion_with_usage(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0,
                     max_tokens=4096,
                 )
+                if self.cost_tracker:
+                    self.cost_tracker.record(kind="extraction", usage=parse_usage(usage))
 
                 content = response.choices[0].message.content
                 if not content:

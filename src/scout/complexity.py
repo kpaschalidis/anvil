@@ -2,6 +2,7 @@ import logging
 from enum import Enum
 
 from common import llm
+from scout.cost import CostTracker, parse_usage
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +31,21 @@ Complexity levels:
 Respond with exactly one word: SIMPLE, MEDIUM, or COMPLEX'''
 
 
-def assess_complexity(topic: str, model: str = "gpt-4o-mini") -> TopicComplexity:
+def assess_complexity(
+    topic: str,
+    model: str = "gpt-4o-mini",
+    *,
+    cost_tracker: CostTracker | None = None,
+) -> TopicComplexity:
     try:
-        response = llm.completion(
+        response, usage = llm.completion_with_usage(
             model=model,
             messages=[{"role": "user", "content": COMPLEXITY_PROMPT.format(topic=topic)}],
             temperature=0.0,
             max_tokens=10,
         )
+        if cost_tracker:
+            cost_tracker.record(kind="complexity", usage=parse_usage(usage))
 
         result = response.choices[0].message.content.strip().upper()
 
@@ -56,8 +64,13 @@ def assess_complexity(topic: str, model: str = "gpt-4o-mini") -> TopicComplexity
         return TopicComplexity.MEDIUM
 
 
-def get_iteration_budget(topic: str, model: str = "gpt-4o-mini") -> int:
-    complexity = assess_complexity(topic, model)
+def get_iteration_budget(
+    topic: str,
+    model: str = "gpt-4o-mini",
+    *,
+    cost_tracker: CostTracker | None = None,
+) -> int:
+    complexity = assess_complexity(topic, model, cost_tracker=cost_tracker)
     budget = ITERATION_BUDGETS[complexity]
     logger.info(f"Iteration budget for '{topic}': {budget}")
     return budget

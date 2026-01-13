@@ -62,6 +62,7 @@ class ScoutConfig:
     saturation_window: int = 10
     parallel_workers: int = 5
     deep_comments: str = "auto"
+    max_cost_usd: float | None = None
     reddit: RedditConfig | None = None
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -84,6 +85,8 @@ class ScoutConfig:
             raise ConfigError("saturation_threshold must be between 0 and 1")
         if self.parallel_workers < 1:
             raise ConfigError("parallel_workers must be at least 1")
+        if self.max_cost_usd is not None and self.max_cost_usd <= 0:
+            raise ConfigError("max_cost_usd must be > 0 when set")
         if self.deep_comments not in ("auto", "always", "never"):
             raise ConfigError("deep_comments must be 'auto', 'always', or 'never'")
         if "reddit" in sources and self.reddit is None:
