@@ -88,10 +88,11 @@ class ScoutConfig:
     def from_profile(cls, profile: str, sources: list[str] | None = None) -> "ScoutConfig":
         profiles = {
             "quick": {
-                "max_iterations": 20,
-                "max_documents": 50,
-                "saturation_threshold": 0.3,
-                "parallel_workers": 3,
+                "max_iterations": 5,
+                "max_documents": 20,
+                "saturation_threshold": 0.5,
+                "parallel_workers": 5,
+                "deep_comments": "never",
             },
             "standard": {
                 "max_iterations": 60,

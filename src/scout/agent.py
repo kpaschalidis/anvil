@@ -364,83 +364,86 @@ class IngestionAgent:
 
             logger.info(f"Saved document {doc.doc_id}: {doc.title[:50]}...")
 
-            extract_start = time.monotonic()
-            pipeline_result = self.pipeline.process(
-                doc,
-                topic=self.session.topic,
-                knowledge=self.session.knowledge,
-            )
-            extract_duration_ms = int((time.monotonic() - extract_start) * 1000)
+            # TODO: EXTRACTION DISABLED FOR TESTING - Just collecting raw documents for now
+            # We can process them separately later. Uncomment below to re-enable extraction.
+            
+            # extract_start = time.monotonic()
+            # pipeline_result = self.pipeline.process(
+            #     doc,
+            #     topic=self.session.topic,
+            #     knowledge=self.session.knowledge,
+            # )
+            # extract_duration_ms = int((time.monotonic() - extract_start) * 1000)
 
-            if pipeline_result.filtered:
-                self._record_query_yield(task, snippets_extracted=0)
-                self._log_event(
-                    "doc_filtered",
-                    input={"doc_id": doc.doc_id},
-                    decision=pipeline_result.reason,
-                    metrics={
-                        "raw_text_len": len(doc.raw_text),
-                        "fetch_duration_ms": fetch_duration_ms,
-                    },
-                )
-                return
+            # if pipeline_result.filtered:
+            #     self._record_query_yield(task, snippets_extracted=0)
+            #     self._log_event(
+            #         "doc_filtered",
+            #         input={"doc_id": doc.doc_id},
+            #         decision=pipeline_result.reason,
+            #         metrics={
+            #             "raw_text_len": len(doc.raw_text),
+            #             "fetch_duration_ms": fetch_duration_ms,
+            #         },
+            #     )
+            #     return
 
-            try:
-                result = pipeline_result.extraction
-                if result is None:
-                    raise RuntimeError("Pipeline returned no extraction result")
+            # try:
+            #     result = pipeline_result.extraction
+            #     if result is None:
+            #         raise RuntimeError("Pipeline returned no extraction result")
 
-                self._record_query_yield(task, snippets_extracted=len(result.snippets))
+            #     self._record_query_yield(task, snippets_extracted=len(result.snippets))
 
-                for snippet in result.snippets:
-                    self.storage.save_snippet(snippet)
-                    self.session.stats.snippets_extracted += 1
-                    for entity in snippet.entities:
-                        self.entity_counts[entity] += 1
-                    self.signal_type_counts[snippet.signal_type] += 1
+            #     for snippet in result.snippets:
+            #         self.storage.save_snippet(snippet)
+            #         self.session.stats.snippets_extracted += 1
+            #         for entity in snippet.entities:
+            #             self.entity_counts[entity] += 1
+            #         self.signal_type_counts[snippet.signal_type] += 1
 
-                self.session.knowledge.extend(
-                    [s.pain_statement for s in result.snippets]
-                )
-                if len(self.session.knowledge) > KNOWLEDGE_CONTEXT_SIZE * 5:
-                    self.session.knowledge = self.session.knowledge[
-                        -KNOWLEDGE_CONTEXT_SIZE * 5 :
-                    ]
+            #     self.session.knowledge.extend(
+            #         [s.pain_statement for s in result.snippets]
+            #     )
+            #     if len(self.session.knowledge) > KNOWLEDGE_CONTEXT_SIZE * 5:
+            #         self.session.knowledge = self.session.knowledge[
+            #             -KNOWLEDGE_CONTEXT_SIZE * 5 :
+            #         ]
 
-                self._add_follow_up_tasks(result, task.source)
+            #     self._add_follow_up_tasks(result, task.source)
 
-                self.session.novelty_history.append(result.novelty)
-                self.recent_empty_extractions.append(len(result.snippets) == 0)
+            #     self.session.novelty_history.append(result.novelty)
+            #     self.recent_empty_extractions.append(len(result.snippets) == 0)
 
-                self._log_event(
-                    "extraction_done",
-                    input={"doc_id": doc.doc_id},
-                    output={
-                        "snippets": len(result.snippets),
-                        "entities": len(result.entities),
-                        "novelty": result.novelty,
-                        "dropped_snippets": result.dropped_snippets,
-                        "error_kind": result.error_kind,
-                    },
-                    metrics={
-                        "fetch_duration_ms": fetch_duration_ms,
-                        "extract_duration_ms": extract_duration_ms,
-                    },
-                )
+            #     self._log_event(
+            #         "extraction_done",
+            #         input={"doc_id": doc.doc_id},
+            #         output={
+            #             "snippets": len(result.snippets),
+            #             "entities": len(result.entities),
+            #             "novelty": result.novelty,
+            #             "dropped_snippets": result.dropped_snippets,
+            #             "error_kind": result.error_kind,
+            #         },
+            #         metrics={
+            #             "fetch_duration_ms": fetch_duration_ms,
+            #             "extract_duration_ms": extract_duration_ms,
+            #         },
+            #     )
 
-            except Exception as e:
-                logger.error(f"Extraction failed for {doc.doc_id}: {e}")
-                self._log_event(
-                    "extraction_failed",
-                    input={"doc_id": doc.doc_id},
-                    decision=str(e),
-                    metrics={
-                        "fetch_duration_ms": fetch_duration_ms,
-                        "extract_duration_ms": extract_duration_ms,
-                        "error_type": type(e).__name__,
-                        "error_stage": "extraction",
-                    },
-                )
+            # except Exception as e:
+            #     logger.error(f"Extraction failed for {doc.doc_id}: {e}")
+            #     self._log_event(
+            #         "extraction_failed",
+            #         input={"doc_id": doc.doc_id},
+            #         decision=str(e),
+            #         metrics={
+            #             "fetch_duration_ms": fetch_duration_ms,
+            #             "extract_duration_ms": extract_duration_ms,
+            #             "error_type": type(e).__name__,
+            #             "error_stage": "extraction",
+            #         },
+            #     )
 
         except Exception as e:
             fetch_duration_ms = int((time.monotonic() - fetch_start) * 1000)
