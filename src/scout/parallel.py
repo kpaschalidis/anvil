@@ -45,7 +45,9 @@ class ParallelExecutor:
         results: list[SearchResult] = []
         actual_workers = min(self.max_workers, len(tasks))
 
-        logger.info(f"Executing {len(tasks)} search tasks with {actual_workers} workers")
+        logger.info(
+            f"Executing {len(tasks)} search tasks with {actual_workers} workers"
+        )
 
         with ThreadPoolExecutor(max_workers=actual_workers) as executor:
             starts = {t.task_id: time.monotonic() for t in tasks}
@@ -55,47 +57,61 @@ class ParallelExecutor:
             }
 
             try:
-                for future in as_completed(future_to_task, timeout=self.overall_timeout):
+                for future in as_completed(
+                    future_to_task, timeout=self.overall_timeout
+                ):
                     task = future_to_task[future]
-                    duration_ms = int((time.monotonic() - starts.get(task.task_id, 0.0)) * 1000)
+                    duration_ms = int(
+                        (time.monotonic() - starts.get(task.task_id, 0.0)) * 1000
+                    )
                     try:
                         page = future.result(timeout=self.task_timeout)
-                        results.append(SearchResult(
-                            task=task,
-                            page=page,
-                            success=True,
-                            duration_ms=duration_ms,
-                        ))
-                        logger.info(f"Task {task.task_id} returned {len(page.items)} results")
+                        results.append(
+                            SearchResult(
+                                task=task,
+                                page=page,
+                                success=True,
+                                duration_ms=duration_ms,
+                            )
+                        )
+                        logger.info(
+                            f"Task {task.task_id} returned {len(page.items)} results"
+                        )
                     except TimeoutError:
                         logger.error(f"Task {task.task_id} timed out")
-                        results.append(SearchResult(
-                            task=task,
-                            page=Page(items=[], exhausted=True),
-                            success=False,
-                            error="Timeout",
-                            duration_ms=duration_ms,
-                        ))
+                        results.append(
+                            SearchResult(
+                                task=task,
+                                page=Page(items=[], exhausted=True),
+                                success=False,
+                                error="Timeout",
+                                duration_ms=duration_ms,
+                            )
+                        )
                     except Exception as e:
                         logger.error(f"Task {task.task_id} failed: {e}")
-                        results.append(SearchResult(
-                            task=task,
-                            page=Page(items=[], exhausted=True),
-                            success=False,
-                            error=str(e),
-                            duration_ms=duration_ms,
-                        ))
+                        results.append(
+                            SearchResult(
+                                task=task,
+                                page=Page(items=[], exhausted=True),
+                                success=False,
+                                error=str(e),
+                                duration_ms=duration_ms,
+                            )
+                        )
             except TimeoutError:
                 logger.error("Overall parallel execution timed out")
                 for task in tasks:
                     if not any(r.task.task_id == task.task_id for r in results):
-                        results.append(SearchResult(
-                            task=task,
-                            page=Page(items=[], exhausted=True),
-                            success=False,
-                            error="Overall timeout",
-                            duration_ms=None,
-                        ))
+                        results.append(
+                            SearchResult(
+                                task=task,
+                                page=Page(items=[], exhausted=True),
+                                success=False,
+                                error="Overall timeout",
+                                duration_ms=None,
+                            )
+                        )
 
         total_refs = sum(len(r.page.items) for r in results)
         success_count = sum(1 for r in results if r.success)

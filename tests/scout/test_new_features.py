@@ -21,7 +21,9 @@ def test_cost_tracker_accumulates_totals():
 
 def test_snippet_validator_filters_and_dedupes():
     validator = SnippetValidator(
-        SnippetValidationConfig(min_confidence=0.5, min_excerpt_length=3, min_pain_statement_length=3)
+        SnippetValidationConfig(
+            min_confidence=0.5, min_excerpt_length=3, min_pain_statement_length=3
+        )
     )
     snippets = [
         PainSnippet(
@@ -68,4 +70,3 @@ def test_session_manager_clone_and_tags(tmp_path):
     assert cloned.parent_session_id == session.session_id
     assert cloned.topic == "new topic"
     assert cloned.tags == ["a", "b"]
-

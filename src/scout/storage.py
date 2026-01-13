@@ -82,19 +82,25 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
-        
+
         cursor = self._conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+        )
         if not cursor.fetchone():
             cursor.executescript(SCHEMA)
-            cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            cursor.execute(
+                "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+            )
             self._conn.commit()
             logger.info(f"Database initialized with schema version {SCHEMA_VERSION}")
         else:
             cursor.execute("SELECT version FROM schema_version")
             row = cursor.fetchone()
             if row and row[0] != SCHEMA_VERSION:
-                logger.warning(f"Schema version mismatch: expected {SCHEMA_VERSION}, got {row[0]}")
+                logger.warning(
+                    f"Schema version mismatch: expected {SCHEMA_VERSION}, got {row[0]}"
+                )
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -239,9 +245,12 @@ class Storage:
         return sorted(all_entities)
 
     def document_exists(self, doc_id: str) -> bool:
-        return self._fetchone(
-            "SELECT 1 FROM documents WHERE doc_id = ? LIMIT 1", (doc_id,)
-        ) is not None
+        return (
+            self._fetchone(
+                "SELECT 1 FROM documents WHERE doc_id = ? LIMIT 1", (doc_id,)
+            )
+            is not None
+        )
 
     def _row_to_document(self, row: sqlite3.Row) -> RawDocument:
         return RawDocument(
@@ -251,7 +260,11 @@ class Storage:
             url=row["url"],
             permalink=row["permalink"],
             retrieved_at=datetime.fromisoformat(row["retrieved_at"]),
-            published_at=datetime.fromisoformat(row["published_at"]) if row["published_at"] else None,
+            published_at=(
+                datetime.fromisoformat(row["published_at"])
+                if row["published_at"]
+                else None
+            ),
             title=row["title"],
             raw_text=row["raw_text"],
             author=row["author"],
@@ -319,7 +332,9 @@ class Storage:
                 )
         return output_file
 
-    def export_markdown_summary(self, output_file: Path, *, session: "SessionState") -> Path:
+    def export_markdown_summary(
+        self, output_file: Path, *, session: "SessionState"
+    ) -> Path:
         from scout.models import SessionState
 
         if not isinstance(session, SessionState):
@@ -357,9 +372,7 @@ class Storage:
 def atomic_write_json(filepath: Path, data: dict) -> None:
     filepath.parent.mkdir(parents=True, exist_ok=True)
     temp_fd, temp_path = tempfile.mkstemp(
-        dir=filepath.parent, 
-        prefix=f".{filepath.name}.", 
-        suffix=".tmp"
+        dir=filepath.parent, prefix=f".{filepath.name}.", suffix=".tmp"
     )
     try:
         with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
