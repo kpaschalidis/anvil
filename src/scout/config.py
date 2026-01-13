@@ -84,6 +84,36 @@ class ScoutConfig:
             reddit_config = RedditConfig()
         return cls(reddit=reddit_config)
 
+    @classmethod
+    def from_profile(cls, profile: str, sources: list[str] | None = None) -> "ScoutConfig":
+        profiles = {
+            "quick": {
+                "max_iterations": 20,
+                "max_documents": 50,
+                "saturation_threshold": 0.3,
+                "parallel_workers": 3,
+            },
+            "standard": {
+                "max_iterations": 60,
+                "max_documents": 200,
+                "saturation_threshold": 0.2,
+                "parallel_workers": 5,
+            },
+            "deep": {
+                "max_iterations": 150,
+                "max_documents": 500,
+                "saturation_threshold": 0.15,
+                "parallel_workers": 8,
+                "deep_comments": "always",
+            },
+        }
+        if profile not in profiles:
+            raise ConfigError(f"Unknown profile: {profile}")
+        config = cls.from_env(sources=sources)
+        for key, value in profiles[profile].items():
+            setattr(config, key, value)
+        return config
+
     def validate(self, sources: list[str] | None = None) -> None:
         sources = sources or ["hackernews"]
         if self.max_iterations < 1:

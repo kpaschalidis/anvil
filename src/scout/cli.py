@@ -68,7 +68,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
 
     try:
-        config = ScoutConfig.from_env(sources=source_names)
+        config = ScoutConfig.from_profile(args.profile, sources=source_names)
         config.validate(sources=source_names)
 
         if args.max_iterations:
@@ -301,6 +301,13 @@ def main() -> int:
         "-s",
         default="hackernews",
         help="Data sources (comma-separated): hackernews, reddit (default: hackernews)",
+    )
+    run_parser.add_argument(
+        "--profile",
+        "-p",
+        choices=["quick", "standard", "deep"],
+        default="standard",
+        help="Research profile (default: standard)",
     )
     run_parser.add_argument(
         "--max-iterations", "-i", type=int, help="Maximum iterations"
