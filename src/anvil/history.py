@@ -9,6 +9,9 @@ class MessageHistory:
     def set_system_prompt(self, prompt: str):
         self.system_prompt = prompt
 
+    def add_example_messages(self, examples: List[Dict[str, Any]]):
+        self.messages = list(examples) + self.messages
+
     def add_user_message(self, content: str):
         self.messages.append({"role": "user", "content": content})
 
@@ -35,10 +38,16 @@ class MessageHistory:
             }
         )
 
-    def get_messages_for_api(self) -> List[Dict[str, Any]]:
+    def get_messages_for_api(self, system_reminder: Optional[str] = None) -> List[Dict[str, Any]]:
         if self.system_prompt:
-            return [{"role": "system", "content": self.system_prompt}] + self.messages
-        return self.messages
+            msgs = [{"role": "system", "content": self.system_prompt}] + self.messages
+        else:
+            msgs = list(self.messages)
+        
+        if system_reminder:
+            msgs.append({"role": "system", "content": system_reminder})
+        
+        return msgs
 
     def clear(self):
         self.messages = []

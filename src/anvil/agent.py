@@ -12,6 +12,7 @@ from anvil.shell import ShellRunner
 from anvil.parser import ResponseParser
 from anvil.tools import ToolRegistry
 from anvil.linter import Linter
+from anvil.prompts import Prompts
 
 
 class CodingAgentWithTools:
@@ -175,26 +176,11 @@ class CodingAgentWithTools:
             return f"Failed to apply edit to {filepath} - search block not found"
 
     def _set_system_prompt(self):
+        prompts = Prompts()
         if self.config.use_tools:
-            prompt = f"""You are an expert coding assistant operating on the repository at: {self.root_path}
-
-You have DIRECT ACCESS to this codebase through these tools:
-1. list_files(pattern) - List files in the repo (use this first to explore)
-2. read_file(filepath) - Read file contents
-3. write_file(filepath, content) - Create or overwrite files
-4. apply_edit(filepath, search, replace) - Make targeted edits
-5. run_command(command) - Execute shell commands
-6. git_status() - Check git status
-7. git_diff() - View uncommitted changes
-
-IMPORTANT: When asked about the codebase, USE YOUR TOOLS to explore it. Do not say you don't have access - you DO have access through these tools.
-
-When making edits:
-- Use apply_edit() for targeted changes
-- Use write_file() for new files or complete rewrites
-- Always read_file() first to see current contents
-
-Be concise and helpful."""
+            system_prompt = prompts.main_system.format(root_path=self.root_path)
+            self.history.set_system_prompt(system_prompt)
+            self.history.add_example_messages(prompts.example_messages)
         else:
             prompt = """You are an expert coding assistant. You can edit files using search/replace blocks:
 
@@ -208,8 +194,7 @@ new code
 ```
 
 Be concise and helpful."""
-
-        self.history.set_system_prompt(prompt)
+            self.history.set_system_prompt(prompt)
 
     def add_file_to_context(self, filepath: str):
         if filepath not in self.files_in_context:
@@ -416,7 +401,8 @@ Commands:
         self._lint_and_fix()
 
     def _send_to_llm_with_tools_internal(self):
-        messages = self.history.get_messages_for_api()
+        prompts = Prompts()
+        messages = self.history.get_messages_for_api(system_reminder=prompts.system_reminder)
 
         max_iterations = 10
         iteration = 0
@@ -480,7 +466,7 @@ Commands:
                             tool_call_id=tool_call.id, name=tool_name, result=result_str
                         )
 
-                    messages = self.history.get_messages_for_api()
+                    messages = self.history.get_messages_for_api(system_reminder=prompts.system_reminder)
                     continue
 
                 if response.content:
