@@ -83,7 +83,7 @@ def setup_logging(verbose: bool = False, quiet: bool = False, log_format: str = 
     logging.getLogger("prawcore").setLevel(logging.WARNING)
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     
-    if not verbose and not quiet:
+    if quiet:
         logging.getLogger("scout.agent").setLevel(logging.WARNING)
         logging.getLogger("scout.parallel").setLevel(logging.WARNING)
         logging.getLogger("scout.sources").setLevel(logging.WARNING)
