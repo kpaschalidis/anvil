@@ -1,12 +1,17 @@
 import sys
 import argparse
 import subprocess
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from anvil.config import AgentConfig, resolve_model_alias
 from anvil.agent import CodingAgentWithTools
 
 
 def main():
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description="Anvil - AI Coding Agent with Tools")
     parser.add_argument(
         "--model",

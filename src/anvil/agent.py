@@ -176,16 +176,18 @@ class CodingAgentWithTools:
 
     def _set_system_prompt(self):
         if self.config.use_tools:
-            prompt = """You are an expert coding assistant with access to tools.
+            prompt = f"""You are an expert coding assistant operating on the repository at: {self.root_path}
 
-You can:
-1. Read files with read_file(filepath)
-2. Write files with write_file(filepath, content)
-3. List files with list_files(pattern)
-4. Apply edits with apply_edit(filepath, search, replace)
-5. Run commands with run_command(command)
-6. Check git status with git_status()
-7. View git diff with git_diff()
+You have DIRECT ACCESS to this codebase through these tools:
+1. list_files(pattern) - List files in the repo (use this first to explore)
+2. read_file(filepath) - Read file contents
+3. write_file(filepath, content) - Create or overwrite files
+4. apply_edit(filepath, search, replace) - Make targeted edits
+5. run_command(command) - Execute shell commands
+6. git_status() - Check git status
+7. git_diff() - View uncommitted changes
+
+IMPORTANT: When asked about the codebase, USE YOUR TOOLS to explore it. Do not say you don't have access - you DO have access through these tools.
 
 When making edits:
 - Use apply_edit() for targeted changes
@@ -253,6 +255,7 @@ Be concise and helpful."""
             except Exception as e:
                 print(f"\n❌ Error: {e}")
                 import traceback
+
                 traceback.print_exc()
 
     def _handle_command(self, command: str) -> bool:
@@ -336,13 +339,16 @@ Be concise and helpful."""
     def cmd_tokens(self, args: str) -> bool:
         try:
             import tiktoken
+
             enc = tiktoken.encoding_for_model("gpt-4o")
             messages = self.history.get_messages_for_api()
             total = sum(len(enc.encode(str(m.get("content", "")))) for m in messages)
             print(f"📊 Estimated tokens: ~{total:,}")
         except ImportError:
             msg_count = len(self.history.messages)
-            print(f"📊 Messages in history: {msg_count} (install tiktoken for token count)")
+            print(
+                f"📊 Messages in history: {msg_count} (install tiktoken for token count)"
+            )
         return True
 
     def cmd_git(self, args: str) -> bool:
@@ -355,7 +361,8 @@ Be concise and helpful."""
         return True
 
     def cmd_help(self, args: str) -> bool:
-        print("""
+        print(
+            """
 Commands:
   /add <file>     Add file to context
   /drop <file>    Remove file from context
@@ -368,7 +375,8 @@ Commands:
   /git diff       Show git diff
   /help           Show this help
   /quit           Exit
-""")
+"""
+        )
         return True
 
     def process_user_message(self, message: str):
@@ -486,11 +494,13 @@ Commands:
                 if "rate" in error_str and "limit" in error_str:
                     print("❌ Rate limit hit. Waiting...")
                     import time
+
                     time.sleep(5)
                     continue
 
                 print(f"\n❌ Error calling LLM: {e}")
                 import traceback
+
                 traceback.print_exc()
                 break
 
@@ -529,9 +539,13 @@ Commands:
                         accumulated_tool_calls[idx]["id"] = tc.id
                     if hasattr(tc, "function") and tc.function:
                         if tc.function.name:
-                            accumulated_tool_calls[idx]["function"]["name"] = tc.function.name
+                            accumulated_tool_calls[idx]["function"][
+                                "name"
+                            ] = tc.function.name
                         if tc.function.arguments:
-                            accumulated_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+                            accumulated_tool_calls[idx]["function"][
+                                "arguments"
+                            ] += tc.function.arguments
 
         print()
 
@@ -541,6 +555,7 @@ Commands:
                 self.tool_calls: List[Any] = []
 
                 for tc_data in tool_calls.values():
+
                     class ToolCall:
                         def __init__(self, data: Dict[str, Any]):
                             self.id = data["id"]

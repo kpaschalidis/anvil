@@ -1,5 +1,23 @@
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
+
+
+IGNORED_DIRS: Set[str] = {
+    ".venv",
+    "venv",
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".eggs",
+    "*.egg-info",
+}
+
+MAX_FILES = 500
 
 
 class FileManager:
@@ -24,9 +42,24 @@ class FileManager:
     def list_files(self, pattern: str = "*") -> List[str]:
         files = []
         for path in self.root_path.rglob(pattern):
-            if path.is_file():
-                files.append(str(path.relative_to(self.root_path)))
-        return files
+            if not path.is_file():
+                continue
+            rel_path = path.relative_to(self.root_path)
+            if self._should_ignore(rel_path):
+                continue
+            files.append(str(rel_path))
+            if len(files) >= MAX_FILES:
+                break
+        return sorted(files)
+
+    def _should_ignore(self, rel_path: Path) -> bool:
+        parts = rel_path.parts
+        for part in parts:
+            if part in IGNORED_DIRS:
+                return True
+            if part.startswith(".") and part not in {".env", ".gitignore"}:
+                return True
+        return False
 
     def apply_edit(self, filepath: str, search: str, replace: str) -> bool:
         try:

@@ -1,8 +1,10 @@
+import warnings
 from typing import Any
+
 import litellm
 from litellm import completion as litellm_completion
 
-
+warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
 litellm.drop_params = True
 
 

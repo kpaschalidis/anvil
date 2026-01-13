@@ -17,10 +17,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install dependencies (creates .venv/ automatically)
 uv sync
 
-# Set your API key(s)
-export OPENAI_API_KEY=your-key-here
-export ANTHROPIC_API_KEY=your-key-here  # for Claude models
-export GEMINI_API_KEY=your-key-here     # for Gemini models
+# Create .env file with your API keys
+echo "OPENAI_API_KEY=sk-..." > .env
+```
+
+Anvil auto-loads `.env` from the current directory. Add keys for the providers you use:
+
+```bash
+OPENAI_API_KEY=sk-...              # for gpt-4o, gpt-4
+ANTHROPIC_API_KEY=sk-ant-...       # for Claude models
+GEMINI_API_KEY=...                 # for Gemini models
 ```
 
 > **Note:** `uv sync` creates a virtual environment in `.venv/`. All `uv run` commands execute inside this venv automatically.
