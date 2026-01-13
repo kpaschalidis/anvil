@@ -1,8 +1,15 @@
 import logging
+import time
 from collections import Counter, defaultdict, deque
 from typing import Callable
 
 from scout.config import ScoutConfig
+from scout.constants import (
+    KNOWLEDGE_CONTEXT_SIZE,
+    MAX_ENTITIES_FOR_FOLLOWUP,
+    MAX_FOLLOWUP_QUERIES,
+    SIGNAL_TYPE_COUNT,
+)
 from scout.cost import CostTracker
 from scout.filters import ContentFilter
 from scout.models import (
@@ -150,7 +157,7 @@ class IngestionAgent:
         ]
 
         queries = [t.format(topic=topic) for t in templates]
-        for entity in self._top_entities(limit=3):
+        for entity in self._top_entities(limit=MAX_ENTITIES_FOR_FOLLOWUP):
             queries.append(f"{entity} problems")
             queries.append(f"{entity} vs {topic}")
 
@@ -260,19 +267,25 @@ class IngestionAgent:
                     self.session.stats.tasks_completed += 1
                     self._log_event(
                         "task_completed",
-                        input={"task_id": task.task_id},
+                        input={"task_id": task.task_id, "source": task.source, "query": task.query},
                         output={
                             "refs_found": len(page.items),
                             "exhausted": page.exhausted,
                         },
+                        metrics={"duration_ms": result.duration_ms},
                     )
                 else:
                     breaker.record_failure()
                     logger.error(f"Task {task.task_id} failed: {result.error}")
                     self._log_event(
                         "task_failed",
-                        input={"task_id": task.task_id},
+                        input={"task_id": task.task_id, "source": task.source, "query": task.query},
                         decision=result.error or "Unknown error",
+                        metrics={
+                            "duration_ms": result.duration_ms,
+                            "error_type": "timeout" if result.error == "Timeout" else "search_error",
+                            "error_stage": "search",
+                        },
                     )
 
         logger.info(f"Found {len(all_refs)} new refs to process")
@@ -324,8 +337,10 @@ class IngestionAgent:
         if not source:
             return
 
+        fetch_start = time.monotonic()
         try:
             doc = source.fetch(ref, deep_comments=self.config.deep_comments)
+            fetch_duration_ms = int((time.monotonic() - fetch_start) * 1000)
 
             self.storage.save_document(doc)
             self.session.visited_docs.append(ref.ref_id)
@@ -333,18 +348,24 @@ class IngestionAgent:
 
             logger.info(f"Saved document {doc.doc_id}: {doc.title[:50]}...")
 
+            extract_start = time.monotonic()
             pipeline_result = self.pipeline.process(
                 doc,
                 topic=self.session.topic,
                 knowledge=self.session.knowledge,
             )
+            extract_duration_ms = int((time.monotonic() - extract_start) * 1000)
+
             if pipeline_result.filtered:
                 self._record_query_yield(task, snippets_extracted=0)
                 self._log_event(
                     "doc_filtered",
                     input={"doc_id": doc.doc_id},
                     decision=pipeline_result.reason,
-                    metrics={"raw_text_len": len(doc.raw_text)},
+                    metrics={
+                        "raw_text_len": len(doc.raw_text),
+                        "fetch_duration_ms": fetch_duration_ms,
+                    },
                 )
                 return
 
@@ -365,6 +386,8 @@ class IngestionAgent:
                 self.session.knowledge.extend(
                     [s.pain_statement for s in result.snippets]
                 )
+                if len(self.session.knowledge) > KNOWLEDGE_CONTEXT_SIZE * 5:
+                    self.session.knowledge = self.session.knowledge[-KNOWLEDGE_CONTEXT_SIZE * 5:]
 
                 self._add_follow_up_tasks(result, task.source)
 
@@ -381,18 +404,38 @@ class IngestionAgent:
                         "dropped_snippets": result.dropped_snippets,
                         "error_kind": result.error_kind,
                     },
+                    metrics={
+                        "fetch_duration_ms": fetch_duration_ms,
+                        "extract_duration_ms": extract_duration_ms,
+                    },
                 )
 
             except Exception as e:
                 logger.error(f"Extraction failed for {doc.doc_id}: {e}")
                 self._log_event(
-                    "extraction_failed", input={"doc_id": doc.doc_id}, decision=str(e)
+                    "extraction_failed",
+                    input={"doc_id": doc.doc_id},
+                    decision=str(e),
+                    metrics={
+                        "fetch_duration_ms": fetch_duration_ms,
+                        "extract_duration_ms": extract_duration_ms,
+                        "error_type": type(e).__name__,
+                        "error_stage": "extraction",
+                    },
                 )
 
         except Exception as e:
+            fetch_duration_ms = int((time.monotonic() - fetch_start) * 1000)
             logger.error(f"Failed to fetch {ref.ref_id}: {e}")
             self._log_event(
-                "fetch_failed", input={"ref_id": ref.ref_id}, decision=str(e)
+                "fetch_failed",
+                input={"ref_id": ref.ref_id},
+                decision=str(e),
+                metrics={
+                    "fetch_duration_ms": fetch_duration_ms,
+                    "error_type": type(e).__name__,
+                    "error_stage": "fetch",
+                },
             )
 
     def _record_query_yield(self, task: SearchTask, *, snippets_extracted: int) -> None:
@@ -404,13 +447,13 @@ class IngestionAgent:
         stats["snippets"] += int(snippets_extracted)
 
     def _add_follow_up_tasks(self, result: ExtractionResult, source: str) -> None:
-        for entity in result.entities[:3]:
+        for entity in result.entities[:MAX_ENTITIES_FOR_FOLLOWUP]:
             if not self._task_exists(f"{entity} problems"):
                 self._add_search_task(
                     source, "all", "search", query=f"{entity} problems"
                 )
 
-        for query in result.follow_up_queries[:2]:
+        for query in result.follow_up_queries[:MAX_FOLLOWUP_QUERIES]:
             if not self._task_exists(query):
                 self._add_search_task(source, "all", "search", query=query)
 
@@ -486,11 +529,10 @@ class IngestionAgent:
         return signal_diversity >= self.config.saturation_signal_diversity_threshold
 
     def _signal_diversity(self) -> float:
-        valid = 9
         if not self.signal_type_counts:
             return 0.0
         unique = len([k for k, v in self.signal_type_counts.items() if v > 0])
-        return unique / valid
+        return unique / SIGNAL_TYPE_COUNT
 
     def _avg_novelty(self) -> float:
         if not self.session.novelty_history:

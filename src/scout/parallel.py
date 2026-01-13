@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from dataclasses import dataclass
 import time
@@ -7,6 +8,9 @@ from typing import Callable
 from scout.models import SearchTask, DocumentRef, Page
 
 logger = logging.getLogger(__name__)
+
+SUCCESS_RATE_WINDOW = 20
+LOW_SUCCESS_RATE_THRESHOLD = 0.5
 
 
 @dataclass
@@ -18,6 +22,20 @@ class SearchResult:
     duration_ms: int | None = None
 
 
+class SuccessRateTracker:
+    def __init__(self, window: int = SUCCESS_RATE_WINDOW):
+        self.window = window
+        self._history: deque[bool] = deque(maxlen=window)
+
+    def record(self, success: bool) -> None:
+        self._history.append(success)
+
+    def rate(self) -> float:
+        if not self._history:
+            return 1.0
+        return sum(self._history) / len(self._history)
+
+
 class ParallelExecutor:
     def __init__(
         self,
@@ -27,12 +45,26 @@ class ParallelExecutor:
         task_timeout: float = 30.0,
         max_retries: int = 0,
         retry_delay: float = 1.0,
+        adaptive_scaling: bool = True,
     ):
         self.max_workers = max_workers
         self.overall_timeout = overall_timeout
         self.task_timeout = task_timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.adaptive_scaling = adaptive_scaling
+        self.success_tracker = SuccessRateTracker()
+
+    def _effective_workers(self, task_count: int) -> int:
+        base = min(self.max_workers, task_count)
+        if not self.adaptive_scaling:
+            return base
+        rate = self.success_tracker.rate()
+        if rate < LOW_SUCCESS_RATE_THRESHOLD:
+            scaled = max(1, base // 2)
+            logger.info(f"Scaling down workers: {base} -> {scaled} (success rate {rate:.2f})")
+            return scaled
+        return base
 
     def execute_searches(
         self,
@@ -43,7 +75,7 @@ class ParallelExecutor:
             return []
 
         results: list[SearchResult] = []
-        actual_workers = min(self.max_workers, len(tasks))
+        actual_workers = self._effective_workers(len(tasks))
 
         logger.info(
             f"Executing {len(tasks)} search tasks with {actual_workers} workers"
@@ -74,6 +106,7 @@ class ParallelExecutor:
                                 duration_ms=duration_ms,
                             )
                         )
+                        self.success_tracker.record(True)
                         logger.info(
                             f"Task {task.task_id} returned {len(page.items)} results"
                         )
@@ -88,6 +121,7 @@ class ParallelExecutor:
                                 duration_ms=duration_ms,
                             )
                         )
+                        self.success_tracker.record(False)
                     except Exception as e:
                         logger.error(f"Task {task.task_id} failed: {e}")
                         results.append(
@@ -99,6 +133,7 @@ class ParallelExecutor:
                                 duration_ms=duration_ms,
                             )
                         )
+                        self.success_tracker.record(False)
             except TimeoutError:
                 logger.error("Overall parallel execution timed out")
                 for task in tasks:

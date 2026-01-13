@@ -305,7 +305,8 @@ class TestExtractorParsing:
 
         result = extractor._parse_response(content, "doc:123")
 
-        assert len(result.follow_up_queries) == 5
+        from scout.constants import MAX_FOLLOWUP_QUERIES
+        assert len(result.follow_up_queries) == MAX_FOLLOWUP_QUERIES
 
     def test_parse_follow_up_queries_non_list_defaults_empty(self, extractor):
         content = json.dumps({

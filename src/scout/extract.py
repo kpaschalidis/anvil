@@ -4,6 +4,12 @@ import time
 from typing import Any
 
 from common import llm
+from scout.constants import (
+    CONTENT_TRUNCATION_LIMIT,
+    KNOWLEDGE_CONTEXT_SIZE,
+    MAX_FOLLOWUP_QUERIES,
+    VALID_SIGNAL_TYPES,
+)
 from scout.cost import CostTracker, parse_usage
 from scout.models import RawDocument, PainSnippet, ExtractionResult, generate_id, utc_now
 from scout.prompts import DEFAULT_EXTRACTION_PROMPT_VERSION, get_extraction_prompt
@@ -90,12 +96,12 @@ class Extractor:
     ) -> str:
         knowledge_text = "No prior knowledge yet."
         if knowledge:
-            recent_knowledge = knowledge[-20:]
+            recent_knowledge = knowledge[-KNOWLEDGE_CONTEXT_SIZE:]
             knowledge_text = "\n".join(f"- {k}" for k in recent_knowledge)
 
         content = doc.raw_text
-        if len(content) > 8000:
-            content = content[:8000] + "\n\n[Content truncated...]"
+        if len(content) > CONTENT_TRUNCATION_LIMIT:
+            content = content[:CONTENT_TRUNCATION_LIMIT] + "\n\n[Content truncated...]"
 
         return self.prompt_template.format(
             topic=topic,
@@ -164,18 +170,14 @@ class Extractor:
         return ExtractionResult(
             snippets=snippets,
             entities=entities,
-            follow_up_queries=follow_up_queries[:5],
+            follow_up_queries=follow_up_queries[:MAX_FOLLOWUP_QUERIES],
             novelty=novelty,
             dropped_snippets=dropped,
         )
 
     def _validate_signal_type(self, signal_type: str) -> str:
-        valid_types = {
-            "complaint", "wish", "workaround", "switch",
-            "bug", "pricing", "support", "integration", "workflow"
-        }
         signal_type = signal_type.lower().strip()
-        if signal_type in valid_types:
+        if signal_type in VALID_SIGNAL_TYPES:
             return signal_type
         return "complaint"
 
