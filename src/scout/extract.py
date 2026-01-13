@@ -7,6 +7,7 @@ from common import llm
 from scout.cost import CostTracker, parse_usage
 from scout.models import RawDocument, PainSnippet, ExtractionResult, generate_id, utc_now
 from scout.prompts import DEFAULT_EXTRACTION_PROMPT_VERSION, get_extraction_prompt
+from scout.validation import SnippetValidator
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class Extractor:
         max_retries: int = 3,
         retry_delay: float = 2.0,
         cost_tracker: CostTracker | None = None,
+        snippet_validator: SnippetValidator | None = None,
     ):
         self.model = model
         self.prompt_version = prompt_version
@@ -30,6 +32,7 @@ class Extractor:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.cost_tracker = cost_tracker
+        self.snippet_validator = snippet_validator
 
     def extract(
         self,
@@ -67,7 +70,7 @@ class Extractor:
                     time.sleep(self.retry_delay)
                 else:
                     logger.error(f"Failed to parse extraction response for {doc.doc_id}")
-                    return self._empty_result()
+                    return self._empty_result(error_kind="json_parse")
 
             except Exception as e:
                 logger.warning(f"Extraction error on attempt {attempt + 1}: {e}")
@@ -75,9 +78,9 @@ class Extractor:
                     time.sleep(self.retry_delay)
                 else:
                     logger.error(f"Failed to extract from {doc.doc_id}: {e}")
-                    return self._empty_result()
+                    return self._empty_result(error_kind="llm_error")
 
-        return self._empty_result()
+        return self._empty_result(error_kind="unknown")
 
     def _build_prompt(
         self,
@@ -146,11 +149,17 @@ class Extractor:
 
         novelty = self._clamp(data.get("novelty", 0.5), 0.0, 1.0)
 
+        if self.snippet_validator:
+            snippets, dropped = self.snippet_validator.validate(snippets)
+        else:
+            dropped = 0
+
         return ExtractionResult(
             snippets=snippets,
             entities=entities,
             follow_up_queries=follow_up_queries[:5],
             novelty=novelty,
+            dropped_snippets=dropped,
         )
 
     def _validate_signal_type(self, signal_type: str) -> str:
@@ -169,10 +178,12 @@ class Extractor:
         except (TypeError, ValueError):
             return (min_val + max_val) / 2
 
-    def _empty_result(self) -> ExtractionResult:
+    def _empty_result(self, *, error_kind: str | None = None) -> ExtractionResult:
         return ExtractionResult(
             snippets=[],
             entities=[],
             follow_up_queries=[],
             novelty=0.5,
+            dropped_snippets=0,
+            error_kind=error_kind,
         )

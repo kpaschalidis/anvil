@@ -102,6 +102,8 @@ class ExtractionResult(BaseModel):
     entities: list[str] = Field(default_factory=list)
     follow_up_queries: list[str] = Field(default_factory=list)
     novelty: float = Field(default=0.5, ge=0.0, le=1.0)
+    dropped_snippets: int = 0
+    error_kind: str | None = None
 
 
 class SessionStats(BaseModel):

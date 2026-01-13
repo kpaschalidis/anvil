@@ -3,6 +3,7 @@ import logging
 from dataclasses import dataclass, field
 
 from scout.filters import FilterConfig
+from scout.validation import SnippetValidationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class ScoutConfig:
     deep_comments: str = "auto"
     max_cost_usd: float | None = None
     filter: FilterConfig = field(default_factory=FilterConfig)
+    snippet_validation: SnippetValidationConfig = field(default_factory=SnippetValidationConfig)
     reddit: RedditConfig | None = None
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -95,6 +97,12 @@ class ScoutConfig:
             raise ConfigError("filter.min_content_length must be >= 0")
         if self.filter.min_score < 0:
             raise ConfigError("filter.min_score must be >= 0")
+        if not 0.0 <= self.snippet_validation.min_confidence <= 1.0:
+            raise ConfigError("snippet_validation.min_confidence must be between 0 and 1")
+        if self.snippet_validation.min_excerpt_length < 0:
+            raise ConfigError("snippet_validation.min_excerpt_length must be >= 0")
+        if self.snippet_validation.min_pain_statement_length < 0:
+            raise ConfigError("snippet_validation.min_pain_statement_length must be >= 0")
         if self.deep_comments not in ("auto", "always", "never"):
             raise ConfigError("deep_comments must be 'auto', 'always', or 'never'")
         from scout.prompts import EXTRACTION_PROMPTS

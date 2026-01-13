@@ -20,6 +20,7 @@ from scout.extract import Extractor
 from scout.complexity import assess_complexity, ITERATION_BUDGETS
 from scout.parallel import ParallelExecutor, SearchResult
 from scout.sources.base import Source
+from scout.validation import SnippetValidator
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,13 @@ class IngestionAgent:
         self.storage = Storage(session.session_id, config.data_dir)
         self.session_manager = SessionManager(config.data_dir)
         self.content_filter = ContentFilter(config.filter)
+        self.snippet_validator = SnippetValidator(config.snippet_validation)
         self.extractor = Extractor(
             model=config.llm.extraction_model,
             prompt_version=config.llm.extraction_prompt_version,
             max_retries=3,
             cost_tracker=self.cost_tracker,
+            snippet_validator=self.snippet_validator,
         )
         self.parallel_executor = ParallelExecutor(max_workers=config.parallel_workers)
 
@@ -291,6 +294,8 @@ class IngestionAgent:
                         "snippets": len(result.snippets),
                         "entities": len(result.entities),
                         "novelty": result.novelty,
+                        "dropped_snippets": result.dropped_snippets,
+                        "error_kind": result.error_kind,
                     },
                 )
 
