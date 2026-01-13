@@ -125,15 +125,35 @@ class IngestionAgent:
         logger.info(f"Seeded {len(self.session.task_queue)} initial tasks")
 
     def _generate_semantic_queries(self, topic: str) -> list[str]:
-        queries = [
-            topic,
-            f"{topic} problems",
-            f"{topic} frustrating",
-            f"{topic} hate",
-            f"{topic} alternative",
-            f"why is {topic} so hard",
+        templates = [
+            "{topic}",
+            "{topic} problems",
+            "{topic} frustrating",
+            "{topic} hate",
+            "{topic} alternative",
+            "why is {topic} so hard",
+            "{topic} missing features",
+            "{topic} pricing too expensive",
+            "{topic} support terrible",
+            "{topic} integration issues",
         ]
-        return queries
+
+        queries = [t.format(topic=topic) for t in templates]
+        for entity in self._top_entities(limit=3):
+            queries.append(f"{entity} problems")
+            queries.append(f"{entity} vs {topic}")
+
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for q in queries:
+            qn = q.strip().lower()
+            if qn and qn not in seen:
+                seen.add(qn)
+                deduped.append(q.strip())
+        return deduped
+
+    def _top_entities(self, *, limit: int) -> list[str]:
+        return [e for e, _ in self.entity_counts.most_common(limit)]
 
     def _add_search_task(
         self,
