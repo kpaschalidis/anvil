@@ -1,5 +1,5 @@
 import logging
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
 from typing import Callable
 
 from scout.config import ScoutConfig
@@ -58,6 +58,7 @@ class IngestionAgent:
         self.recent_empty_extractions: deque[bool] = deque(
             maxlen=self.config.saturation_empty_extractions_limit
         )
+        self.query_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"docs": 0, "snippets": 0})
 
     def run(self) -> None:
         logger.info(f"Starting ingestion for session {self.session.session_id}")
@@ -276,12 +277,34 @@ class IngestionAgent:
         self.session.stats.tasks_remaining = len(self.session.task_queue)
 
     def _pick_tasks(self, count: int) -> list[SearchTask]:
-        tasks: list[SearchTask] = []
-        while len(tasks) < count and self.session.task_queue:
-            task = self.session.task_queue.pop(0)
-            if task.task_id not in self.session.visited_tasks:
-                tasks.append(task)
-        return tasks
+        candidates: list[tuple[float, SearchTask]] = []
+        for task in self.session.task_queue:
+            if task.task_id in self.session.visited_tasks:
+                continue
+            score = self._task_score(task)
+            candidates.append((score, task))
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        picked = [t for _, t in candidates[:count]]
+        picked_ids = {t.task_id for t in picked}
+        self.session.task_queue = [t for t in self.session.task_queue if t.task_id not in picked_ids]
+        return picked
+
+    def _task_score(self, task: SearchTask) -> float:
+        if not task.query:
+            return 0.0
+        key = task.query.strip().lower()
+        stats = self.query_stats.get(key)
+        if not stats:
+            return 0.2
+        docs = stats.get("docs", 0)
+        snippets = stats.get("snippets", 0)
+        if docs <= 0:
+            return 0.2
+        return snippets / docs
 
     def _process_ref(self, task: SearchTask, ref: DocumentRef) -> None:
         if ref.ref_id in self.session.visited_docs:
@@ -302,6 +325,7 @@ class IngestionAgent:
 
             should_extract, reason = self.content_filter.should_extract(doc)
             if not should_extract:
+                self._record_query_yield(task, snippets_extracted=0)
                 self._log_event(
                     "doc_filtered",
                     input={"doc_id": doc.doc_id},
@@ -316,6 +340,8 @@ class IngestionAgent:
                     self.session.topic,
                     self.session.knowledge,
                 )
+
+                self._record_query_yield(task, snippets_extracted=len(result.snippets))
 
                 for snippet in result.snippets:
                     self.storage.save_snippet(snippet)
@@ -356,6 +382,14 @@ class IngestionAgent:
             self._log_event(
                 "fetch_failed", input={"ref_id": ref.ref_id}, decision=str(e)
             )
+
+    def _record_query_yield(self, task: SearchTask, *, snippets_extracted: int) -> None:
+        if not task.query:
+            return
+        key = task.query.strip().lower()
+        stats = self.query_stats[key]
+        stats["docs"] += 1
+        stats["snippets"] += int(snippets_extracted)
 
     def _add_follow_up_tasks(self, result: ExtractionResult, source: str) -> None:
         for entity in result.entities[:3]:
