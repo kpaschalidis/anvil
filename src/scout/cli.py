@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import json
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -333,6 +334,34 @@ def cmd_archive(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose, args.log_format)
+    data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
+    session_dir = Path(data_dir) / args.session_id
+    filename = {
+        "events": "events.jsonl",
+        "snippets": "snippets.jsonl",
+        "documents": "raw.jsonl",
+    }.get(args.stream, "events.jsonl")
+    path = session_dir / filename
+    if not path.exists():
+        print(f"File not found: {path}")
+        return 1
+
+    with open(path, "r", encoding="utf-8") as f:
+        if not args.from_start:
+            f.seek(0, os.SEEK_END)
+        try:
+            while True:
+                line = f.readline()
+                if not line:
+                    time.sleep(args.interval)
+                    continue
+                print(line.rstrip())
+        except KeyboardInterrupt:
+            return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="scout",
@@ -420,6 +449,27 @@ def main() -> int:
         "--days", type=int, default=30, help="Archive sessions older than N days"
     )
     archive_parser.set_defaults(func=cmd_archive)
+
+    watch_parser = subparsers.add_parser("watch", help="Tail session outputs")
+    watch_parser.add_argument("session_id", help="Session ID")
+    watch_parser.add_argument(
+        "--stream",
+        choices=["events", "snippets", "documents"],
+        default="events",
+        help="Which stream to tail (default: events)",
+    )
+    watch_parser.add_argument(
+        "--from-start",
+        action="store_true",
+        help="Print from start instead of tailing",
+    )
+    watch_parser.add_argument(
+        "--interval",
+        type=float,
+        default=0.5,
+        help="Polling interval in seconds (default: 0.5)",
+    )
+    watch_parser.set_defaults(func=cmd_watch)
 
     args = parser.parse_args()
 
