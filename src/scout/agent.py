@@ -40,6 +40,7 @@ class IngestionAgent:
         self.content_filter = ContentFilter(config.filter)
         self.extractor = Extractor(
             model=config.llm.extraction_model,
+            prompt_version=config.llm.extraction_prompt_version,
             max_retries=3,
             cost_tracker=self.cost_tracker,
         )

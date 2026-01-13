@@ -48,6 +48,7 @@ class HackerNewsConfig:
 class LLMConfig:
     model: str = "gpt-4o"
     extraction_model: str = "gpt-4o"
+    extraction_prompt_version: str = "v1"
     complexity_model: str = "gpt-4o-mini"
     temperature: float = 0.0
     max_tokens: int = 4096
@@ -96,6 +97,12 @@ class ScoutConfig:
             raise ConfigError("filter.min_score must be >= 0")
         if self.deep_comments not in ("auto", "always", "never"):
             raise ConfigError("deep_comments must be 'auto', 'always', or 'never'")
+        from scout.prompts import EXTRACTION_PROMPTS
+
+        if self.llm.extraction_prompt_version not in EXTRACTION_PROMPTS:
+            raise ConfigError(
+                f"Unknown extraction_prompt_version: {self.llm.extraction_prompt_version}"
+            )
         if "reddit" in sources and self.reddit is None:
             raise ConfigError(
                 "Reddit config required but REDDIT_CLIENT_ID/SECRET not set"

@@ -108,6 +108,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Topic: {session.topic}")
         print(f"Sources: {', '.join(source_names)}")
 
+    if args.extraction_prompt:
+        session.extraction_prompt_version = args.extraction_prompt
+    config.llm.extraction_prompt_version = session.extraction_prompt_version
+
     sources = []
     if "hackernews" in source_names:
         sources.append(HackerNewsSource(config.hackernews))
@@ -292,6 +296,11 @@ def main() -> int:
         "--max-cost",
         type=float,
         help="Maximum estimated LLM cost in USD (stop when reached)",
+    )
+    run_parser.add_argument(
+        "--extraction-prompt",
+        choices=["v1", "v2"],
+        help="Extraction prompt version to use (default: session setting)",
     )
     run_parser.set_defaults(func=cmd_run)
 

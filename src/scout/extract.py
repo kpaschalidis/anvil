@@ -6,7 +6,7 @@ from typing import Any
 from common import llm
 from scout.cost import CostTracker, parse_usage
 from scout.models import RawDocument, PainSnippet, ExtractionResult, generate_id, utc_now
-from scout.prompts import EXTRACTION_PROMPT_V1, PROMPT_VERSION
+from scout.prompts import DEFAULT_EXTRACTION_PROMPT_VERSION, get_extraction_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +19,14 @@ class Extractor:
     def __init__(
         self,
         model: str = "gpt-4o",
-        prompt_version: str = PROMPT_VERSION,
+        prompt_version: str = DEFAULT_EXTRACTION_PROMPT_VERSION,
         max_retries: int = 3,
         retry_delay: float = 2.0,
         cost_tracker: CostTracker | None = None,
     ):
         self.model = model
         self.prompt_version = prompt_version
+        self.prompt_template = get_extraction_prompt(prompt_version)
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.cost_tracker = cost_tracker
@@ -93,7 +94,7 @@ class Extractor:
         if len(content) > 8000:
             content = content[:8000] + "\n\n[Content truncated...]"
 
-        return EXTRACTION_PROMPT_V1.format(
+        return self.prompt_template.format(
             topic=topic,
             source=doc.source_entity,
             title=doc.title,
