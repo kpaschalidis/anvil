@@ -23,6 +23,7 @@ from scout.parallel import ParallelExecutor, SearchResult
 from scout.sources.base import Source
 from scout.validation import SnippetValidator
 from scout.circuit_breaker import CircuitBreaker
+from scout.pipeline import ExtractionPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ class IngestionAgent:
             max_retries=3,
             cost_tracker=self.cost_tracker,
             snippet_validator=self.snippet_validator,
+        )
+        self.pipeline = ExtractionPipeline(
+            content_filter=self.content_filter,
+            extractor=self.extractor,
         )
         self.parallel_executor = ParallelExecutor(max_workers=config.parallel_workers)
         self.circuit_breakers = {
@@ -323,23 +328,25 @@ class IngestionAgent:
 
             logger.info(f"Saved document {doc.doc_id}: {doc.title[:50]}...")
 
-            should_extract, reason = self.content_filter.should_extract(doc)
-            if not should_extract:
+            pipeline_result = self.pipeline.process(
+                doc,
+                topic=self.session.topic,
+                knowledge=self.session.knowledge,
+            )
+            if pipeline_result.filtered:
                 self._record_query_yield(task, snippets_extracted=0)
                 self._log_event(
                     "doc_filtered",
                     input={"doc_id": doc.doc_id},
-                    decision=reason,
+                    decision=pipeline_result.reason,
                     metrics={"raw_text_len": len(doc.raw_text)},
                 )
                 return
 
             try:
-                result = self.extractor.extract(
-                    doc,
-                    self.session.topic,
-                    self.session.knowledge,
-                )
+                result = pipeline_result.extraction
+                if result is None:
+                    raise RuntimeError("Pipeline returned no extraction result")
 
                 self._record_query_yield(task, snippets_extracted=len(result.snippets))
 
