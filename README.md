@@ -118,16 +118,76 @@ source .venv/bin/activate
 ## Project Structure
 
 ```
-src/anvil/
-├── cli.py          # Entry point
-├── agent.py        # Main agent loop
-├── config.py       # Configuration + model aliases
-├── llm.py          # LiteLLM wrapper
-├── linter.py       # Python linter
-├── tools/          # Tool registry
-├── git.py          # Git operations
-├── files.py        # File operations
-├── shell.py        # Shell commands
-├── parser.py       # Response parsing
-└── history.py      # Message history
+src/
+├── anvil/          # AI coding agent
+│   ├── cli.py          # Entry point
+│   ├── agent.py        # Main agent loop
+│   ├── config.py       # Configuration + model aliases
+│   ├── llm.py          # LiteLLM wrapper
+│   ├── linter.py       # Python linter
+│   ├── tools/          # Tool registry
+│   ├── git.py          # Git operations
+│   ├── files.py        # File operations
+│   ├── shell.py        # Shell commands
+│   ├── parser.py       # Response parsing
+│   └── history.py      # Message history
+│
+├── scout/          # Product discovery agent (see below)
+│   ├── agent.py        # Research agent
+│   ├── extract.py      # LLM extraction
+│   ├── sources/        # Data sources (HN, Reddit)
+│   ├── storage.py      # Session persistence
+│   └── ...
+│
+└── common/
+    └── llm.py      # Shared LLM utilities
 ```
+
+---
+
+## Scout - Product Discovery Agent
+
+Research pain points from online sources using LLM extraction.
+
+### Quick Start
+
+```bash
+# 1. Install Scout dependencies
+uv pip install -e ".[scout]"
+
+# 2. Set API key (in .env or export)
+export OPENAI_API_KEY="sk-..."
+
+# 3. Run research (5-10 min, ~$0.10)
+uv run scout run "CRM software pain points" --profile quick
+
+# 4. View results
+uv run scout stats <session_id>
+uv run scout export <session_id> --format csv
+```
+
+### Documentation
+
+- **[📘 Quick Start Guide](SCOUT_QUICKSTART.md)** - Complete usage examples with real workflows
+- **[⚙️ Config Reference](examples/CONFIG_REFERENCE.md)** - All configuration options explained
+- **[🐚 Shell Examples](examples/scout_examples.sh)** - Interactive CLI examples
+- **[🐍 Python API Examples](examples/scout_python_api.py)** - Programmatic usage
+
+### Key Features
+
+- **Multiple sources**: Hacker News (ready), Reddit (requires approval)
+- **Smart extraction**: LLM-powered pain point identification
+- **Cost management**: Budgets, filtering, adaptive scaling
+- **Resumable sessions**: Pause and continue research
+- **Rich exports**: CSV, JSON, Markdown summaries
+- **Session management**: Tags, cloning, archiving
+
+### Research Profiles
+
+| Profile | Time | Cost | Best For |
+|---------|------|------|----------|
+| `quick` | 5-10 min | ~$0.10 | Initial validation |
+| `standard` | 15-30 min | ~$0.50 | Most use cases |
+| `deep` | 1-2 hours | ~$2-5 | Comprehensive research |
+
+See [SCOUT_QUICKSTART.md](SCOUT_QUICKSTART.md) for detailed examples and workflows.
