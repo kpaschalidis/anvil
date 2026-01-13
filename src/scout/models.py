@@ -126,6 +126,8 @@ class SessionState(BaseModel):
     topic: str
     status: str = "running"
     extraction_prompt_version: str = "v1"
+    tags: list[str] = Field(default_factory=list)
+    parent_session_id: str | None = None
     task_queue: list[SearchTask] = Field(default_factory=list)
     visited_tasks: list[str] = Field(default_factory=list)
     visited_docs: list[str] = Field(default_factory=list)

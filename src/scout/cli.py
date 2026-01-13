@@ -274,6 +274,47 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tag(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose, args.log_format)
+    data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
+    manager = SessionManager(data_dir)
+    tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
+    try:
+        manager.tag_session(args.session_id, tags)
+    except SessionError as e:
+        print(f"Error: {e}")
+        return 1
+    print(f"Tagged session {args.session_id}: {', '.join(tags) if tags else '(none)'}")
+    return 0
+
+
+def cmd_clone(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose, args.log_format)
+    data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
+    manager = SessionManager(data_dir)
+    try:
+        new_session = manager.clone_session(args.session_id, topic=args.topic)
+    except SessionError as e:
+        print(f"Error: {e}")
+        return 1
+    print(f"Cloned session {args.session_id} -> {new_session.session_id}")
+    print(f"Topic: {new_session.topic}")
+    return 0
+
+
+def cmd_archive(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose, args.log_format)
+    data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
+    manager = SessionManager(data_dir)
+    try:
+        moved = manager.archive_old_sessions(days=args.days)
+    except SessionError as e:
+        print(f"Error: {e}")
+        return 1
+    print(f"Archived {moved} sessions older than {args.days} days")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="scout",
@@ -345,6 +386,22 @@ def main() -> int:
     stats_parser = subparsers.add_parser("stats", help="Show session statistics")
     stats_parser.add_argument("session_id", help="Session ID")
     stats_parser.set_defaults(func=cmd_stats)
+
+    tag_parser = subparsers.add_parser("tag", help="Tag a session")
+    tag_parser.add_argument("session_id", help="Session ID")
+    tag_parser.add_argument("--tags", required=True, help="Comma-separated tags")
+    tag_parser.set_defaults(func=cmd_tag)
+
+    clone_parser = subparsers.add_parser("clone", help="Clone a session")
+    clone_parser.add_argument("session_id", help="Session ID")
+    clone_parser.add_argument("--topic", help="Override topic for cloned session")
+    clone_parser.set_defaults(func=cmd_clone)
+
+    archive_parser = subparsers.add_parser("archive", help="Archive old sessions")
+    archive_parser.add_argument(
+        "--days", type=int, default=30, help="Archive sessions older than N days"
+    )
+    archive_parser.set_defaults(func=cmd_archive)
 
     args = parser.parse_args()
 

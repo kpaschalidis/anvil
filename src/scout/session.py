@@ -47,6 +47,8 @@ class SessionManager:
                 topic=data["topic"],
                 status=data.get("status", "running"),
                 extraction_prompt_version=data.get("extraction_prompt_version", "v1"),
+                tags=data.get("tags", []),
+                parent_session_id=data.get("parent_session_id"),
                 task_queue=task_queue,
                 visited_tasks=data.get("visited_tasks", []),
                 visited_docs=data.get("visited_docs", []),
@@ -77,6 +79,8 @@ class SessionManager:
             "topic": session.topic,
             "status": session.status,
             "extraction_prompt_version": session.extraction_prompt_version,
+            "tags": session.tags,
+            "parent_session_id": session.parent_session_id,
             "task_queue": [t.model_dump(mode="json") for t in session.task_queue],
             "visited_tasks": session.visited_tasks,
             "visited_docs": session.visited_docs,
@@ -128,6 +132,64 @@ class SessionManager:
         shutil.rmtree(session_dir)
         logger.info(f"Deleted session {session_id}")
         return True
+
+    def tag_session(self, session_id: str, tags: list[str]) -> None:
+        session = self.load_session(session_id)
+        if not session:
+            raise SessionError(f"Session {session_id} not found")
+        session.tags = tags
+        self.save_session(session)
+
+    def clone_session(self, session_id: str, *, topic: str | None = None) -> SessionState:
+        session = self.load_session(session_id)
+        if not session:
+            raise SessionError(f"Session {session_id} not found")
+
+        new_session = SessionState(
+            session_id=generate_id(),
+            topic=topic or session.topic,
+            status="running",
+            extraction_prompt_version=session.extraction_prompt_version,
+            tags=session.tags.copy(),
+            parent_session_id=session_id,
+            max_iterations=session.max_iterations,
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        self._save_state(new_session)
+        logger.info(f"Cloned session {session_id} -> {new_session.session_id}")
+        return new_session
+
+    def archive_old_sessions(self, *, days: int = 30) -> int:
+        if days < 1:
+            raise SessionError("days must be at least 1")
+        cutoff = utc_now().timestamp() - (days * 86400)
+        archive_dir = self.data_dir / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        moved = 0
+        for session_dir in self.data_dir.iterdir():
+            if not session_dir.is_dir() or session_dir.name == "archive":
+                continue
+            state_path = session_dir / "state.json"
+            if not state_path.exists():
+                continue
+            data = load_json(state_path)
+            updated_at = (data or {}).get("updated_at")
+            if not updated_at:
+                continue
+            try:
+                ts = datetime.fromisoformat(updated_at).timestamp()
+            except Exception:
+                continue
+            if ts < cutoff:
+                target = archive_dir / session_dir.name
+                if target.exists():
+                    continue
+                session_dir.rename(target)
+                moved += 1
+
+        return moved
 
 
 def load_or_create_session(
