@@ -1,7 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 
 from anvil import llm
 from anvil.config import AgentConfig, resolve_model_alias
@@ -23,12 +23,15 @@ class CodingAgentWithTools:
         self.history = MessageHistory()
         self.git = GitRepo(str(root_path))
         self.files = FileManager(str(root_path))
-        self.shell = ShellRunner(str(root_path))
+        self.shell = ShellRunner(
+            str(root_path), auto_approve=self.config.approval_mode == "full-auto"
+        )
         self.parser = ResponseParser()
         self.tools = ToolRegistry()
         self.linter = Linter(str(root_path))
 
         self.files_in_context: List[str] = []
+        self.read_only_files: Set[str] = set()
         self.interrupted = False
         self.last_commit_hash: str | None = None
         self.last_edited_files: List[str] = []
@@ -142,6 +145,10 @@ class CodingAgentWithTools:
         return self.files.read_file(filepath)
 
     def _tool_write_file(self, filepath: str, content: str) -> str:
+        if self._is_read_only(filepath):
+            return f"Refusing to write {filepath}: file is read-only"
+        if not self._require_approval(f"write {filepath}"):
+            return f"Write to {filepath} not approved"
         self.files.write_file(filepath, content)
         self.last_edited_files.append(filepath)
         return f"File {filepath} written successfully"
@@ -168,6 +175,10 @@ class CodingAgentWithTools:
         return status if status else "Nothing to commit"
 
     def _tool_apply_edit(self, filepath: str, search: str, replace: str) -> str:
+        if self._is_read_only(filepath):
+            return f"Refusing to edit {filepath}: file is read-only"
+        if not self._require_approval(f"edit {filepath}"):
+            return f"Edit to {filepath} not approved"
         success = self.files.apply_edit(filepath, search, replace)
         if success:
             self.last_edited_files.append(filepath)
@@ -175,12 +186,44 @@ class CodingAgentWithTools:
         else:
             return f"Failed to apply edit to {filepath} - search block not found"
 
+    def _is_read_only(self, filepath: str) -> bool:
+        return filepath in self.read_only_files
+
+    def _require_approval(self, action: str) -> bool:
+        if self.config.approval_mode != "suggest":
+            return True
+        response = input(f"Approve {action}? [y/N] ").strip().lower()
+        if response in {"y", "yes"}:
+            return True
+        print(f"⚠️  Skipped: {action}")
+        return False
+
     def _set_system_prompt(self):
         prompts = Prompts()
         if self.config.use_tools:
             system_prompt = prompts.main_system.format(root_path=self.root_path)
             self.history.set_system_prompt(system_prompt)
             self.history.add_example_messages(prompts.example_messages)
+        else:
+            prompt = """You are an expert coding assistant. You can edit files using search/replace blocks:
+
+filename.py
+```python
+<<<<<<< SEARCH
+old code
+=======
+new code
+>>>>>>> REPLACE
+```
+
+Be concise and helpful."""
+            self.history.set_system_prompt(prompt)
+
+    def _set_system_prompt_base(self):
+        prompts = Prompts()
+        if self.config.use_tools:
+            system_prompt = prompts.main_system.format(root_path=self.root_path)
+            self.history.set_system_prompt(system_prompt)
         else:
             prompt = """You are an expert coding assistant. You can edit files using search/replace blocks:
 
@@ -275,9 +318,30 @@ Be concise and helpful."""
             return True
         if args in self.files_in_context:
             self.files_in_context.remove(args)
+            self.read_only_files.discard(args)
             print(f"✅ Dropped {args} from context")
         else:
             print(f"❌ {args} not in context")
+        return True
+
+    def cmd_read_only(self, args: str) -> bool:
+        if not args:
+            print("Usage: /read-only <filepath>")
+            return True
+        self.add_file_to_context(args)
+        self.read_only_files.add(args)
+        print(f"🔒 Marked {args} as read-only")
+        return True
+
+    def cmd_read_write(self, args: str) -> bool:
+        if not args:
+            print("Usage: /read-write <filepath>")
+            return True
+        if args in self.read_only_files:
+            self.read_only_files.remove(args)
+            print(f"✅ {args} is now writable")
+        else:
+            print(f"ℹ️  {args} was not read-only")
         return True
 
     def cmd_files(self, args: str) -> bool:
@@ -286,12 +350,14 @@ Be concise and helpful."""
         else:
             print("Files in context:")
             for f in self.files_in_context:
-                print(f"  • {f}")
+                suffix = " (read-only)" if f in self.read_only_files else ""
+                print(f"  • {f}{suffix}")
         return True
 
     def cmd_clear(self, args: str) -> bool:
         self.history.clear()
         self.files_in_context.clear()
+        self.read_only_files.clear()
         self._set_system_prompt()
         print("✅ Cleared chat history and context")
         return True
@@ -321,6 +387,19 @@ Be concise and helpful."""
         print(f"✅ Switched to model: {self.config.model}")
         return True
 
+    def cmd_approval(self, args: str) -> bool:
+        if not args:
+            print(f"Current approval mode: {self.config.approval_mode}")
+            return True
+        mode = args.strip().lower()
+        if mode not in {"suggest", "auto-edit", "full-auto"}:
+            print("Usage: /approval [suggest|auto-edit|full-auto]")
+            return True
+        self.config.approval_mode = mode
+        self.shell.auto_approve = mode == "full-auto"
+        print(f"✅ Approval mode set to: {mode}")
+        return True
+
     def cmd_tokens(self, args: str) -> bool:
         try:
             import tiktoken
@@ -345,19 +424,79 @@ Be concise and helpful."""
             print("Usage: /git status or /git diff")
         return True
 
+    def cmd_save(self, args: str) -> bool:
+        if not args:
+            print("Usage: /save <filepath>")
+            return True
+        path = self.root_path / args
+        data = {
+            "history": self.history.to_dict(),
+            "files_in_context": self.files_in_context,
+            "read_only_files": sorted(self.read_only_files),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2))
+            print(f"✅ Session saved to {path}")
+        except Exception as e:
+            print(f"❌ Failed to save session: {e}")
+        return True
+
+    def cmd_load(self, args: str) -> bool:
+        if not args:
+            print("Usage: /load <filepath>")
+            return True
+        path = self.root_path / args
+        try:
+            data = json.loads(path.read_text())
+        except Exception as e:
+            print(f"❌ Failed to load session: {e}")
+            return True
+        history_data = data.get("history", {})
+        self.history = MessageHistory.from_dict(history_data)
+        if not self.history.system_prompt:
+            self._set_system_prompt_base()
+        self.files_in_context = data.get("files_in_context", [])
+        self.read_only_files = set(data.get("read_only_files", []))
+        print(f"✅ Session loaded from {path}")
+        return True
+
+    def cmd_test(self, args: str) -> bool:
+        command = args.strip() or self.config.test_command
+        print(f"🧪 Running tests: {command}")
+        result = self.shell.run_command(command)
+        if result["success"]:
+            print(result["stdout"])
+            return True
+        output = "\n".join(
+            [part for part in [result.get("stdout", ""), result.get("stderr", "")] if part]
+        )
+        print(output)
+        self.history.add_user_message(
+            f"Test run failed (command: {command}).\n\n{output}"
+        )
+        self._send_to_llm_with_tools()
+        return True
+
     def cmd_help(self, args: str) -> bool:
         print(
             """
 Commands:
   /add <file>     Add file to context
   /drop <file>    Remove file from context
+  /read-only <file>  Add file to context as read-only
+  /read-write <file> Remove read-only status
   /files          List files in context
   /clear          Clear chat history
   /undo           Revert last auto-commit
   /model [name]   Show or switch model
+  /approval [mode] Set approval mode (suggest, auto-edit, full-auto)
   /tokens         Show token usage
   /git status     Show git status
   /git diff       Show git diff
+  /save <file>    Save session to file
+  /load <file>    Load session from file
+  /test [cmd]     Run tests and feed failures to the agent
   /help           Show this help
   /quit           Exit
 """
@@ -367,6 +506,44 @@ Commands:
     def process_user_message(self, message: str):
         self.history.add_user_message(message)
         self._send_to_llm_with_tools()
+
+    def _maybe_summarize_history(self):
+        max_messages = self.config.summary_max_messages
+        if max_messages <= 0:
+            return
+        if len(self.history.messages) <= max_messages:
+            return
+        keep_last = max(0, self.config.summary_keep_last)
+        to_summarize = (
+            self.history.messages[:-keep_last]
+            if keep_last
+            else list(self.history.messages)
+        )
+        if not to_summarize:
+            return
+        summary_model = self.config.summary_model or self.config.model
+        prompt = (
+            "Summarize the conversation so far for future context. "
+            "Include key decisions, file changes, commands run, and open tasks. "
+            "Be concise and factual."
+        )
+        if self.history.summary:
+            prompt += f"\n\nExisting summary:\n{self.history.summary}"
+        prompt += "\n\nMessages:\n" + json.dumps(to_summarize, indent=2)
+        try:
+            completion = llm.completion(
+                model=summary_model,
+                messages=[{"role": "user", "content": prompt}],
+                stream=False,
+                temperature=0.0,
+                max_tokens=512,
+            )
+            summary = completion.choices[0].message.content
+            if summary:
+                self.history.set_summary(summary.strip())
+                self.history.messages = self.history.messages[-keep_last:]
+        except Exception as e:
+            print(f"⚠️  Failed to summarize history: {e}")
 
     def _lint_and_fix(self, max_retries: int | None = None):
         if not self.config.auto_lint or not self.last_edited_files:
@@ -397,6 +574,7 @@ Commands:
             print("⚠️  Could not auto-fix all lint errors")
 
     def _send_to_llm_with_tools(self):
+        self._maybe_summarize_history()
         self._send_to_llm_with_tools_internal()
         self._lint_and_fix()
 
@@ -566,10 +744,19 @@ Commands:
 
         print(f"\n📝 Applying {len(edits)} edit(s)...")
 
+        if self.config.approval_mode == "suggest" and not self._require_approval(
+            f"apply {len(edits)} edit(s)"
+        ):
+            return
+
         edited_files = []
 
         for filename, search, replace in edits:
             print(f"  Editing {filename}...")
+
+            if self._is_read_only(filename):
+                print(f"  🔒 Skipped {filename} (read-only)")
+                continue
 
             if self.config.dry_run:
                 print(f"    [DRY RUN] Would edit {filename}")
@@ -584,7 +771,12 @@ Commands:
             else:
                 print(f"  ❌ Failed to edit {filename}")
 
-        if edited_files and self.config.auto_commit and not self.config.dry_run:
+        if (
+            edited_files
+            and self.config.auto_commit
+            and self.config.approval_mode == "full-auto"
+            and not self.config.dry_run
+        ):
             try:
                 commit_msg = "anvil: applied edits"
                 hash_str, _ = self.git.commit(commit_msg, edited_files)

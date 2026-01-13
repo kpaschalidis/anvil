@@ -58,6 +58,8 @@ uv run anvil --help
 uv run anvil --no-lint        # Disable auto-linting
 uv run anvil --no-auto-commit # Disable auto-commit
 uv run anvil --dry-run        # Preview changes without applying
+uv run anvil --approval-mode suggest   # Require approval before edits
+uv run anvil --test-command "pytest -q"
 ```
 
 ### Commands (inside the agent)
@@ -66,13 +68,19 @@ uv run anvil --dry-run        # Preview changes without applying
 |---------|-------------|
 | `/add <file>` | Add file to context |
 | `/drop <file>` | Remove file from context |
+| `/read-only <file>` | Add file to context as read-only |
+| `/read-write <file>` | Remove read-only status |
 | `/files` | List files in context |
 | `/clear` | Clear chat history |
 | `/undo` | Revert last auto-commit |
 | `/model [name]` | Show or switch model |
+| `/approval [mode]` | Set approval mode (suggest, auto-edit, full-auto) |
 | `/tokens` | Show token usage |
 | `/git status` | Show git status |
 | `/git diff` | Show git diff |
+| `/save <file>` | Save session to file |
+| `/load <file>` | Load session from file |
+| `/test [cmd]` | Run tests and feed failures to the agent |
 | `/help` | Show all commands |
 | `/quit` | Exit |
 
@@ -98,6 +106,11 @@ Or use any LiteLLM-supported model name directly.
 - **Auto-linting** with automatic fix attempts for Python files
 - **Auto-commit** changes with undo support
 - **Streaming** responses
+- **Approval modes** to control autonomy (suggest, auto-edit, full-auto)
+- **Session save/load** for long-running work
+- **Conversation summarization** when history grows large
+- **Read-only files** for safe context
+- **Test runner command** with automated failure fixes
 
 ## Development
 
