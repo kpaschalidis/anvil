@@ -14,7 +14,10 @@ from scout.config import ScoutConfig, ConfigError
 from scout.session import SessionManager, load_or_create_session, SessionError
 from scout.agent import IngestionAgent
 from scout.sources.reddit import RedditSource
+from scout.sources.hackernews import HackerNewsSource
 from scout.storage import Storage
+
+AVAILABLE_SOURCES = ["hackernews", "reddit"]
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -34,9 +37,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     logger = logging.getLogger(__name__)
 
+    source_names = args.source.split(",") if args.source else ["hackernews"]
+    source_names = [s.strip() for s in source_names]
+
+    for s in source_names:
+        if s not in AVAILABLE_SOURCES:
+            print(
+                f"Error: Unknown source '{s}'. Available: {', '.join(AVAILABLE_SOURCES)}"
+            )
+            return 1
+
     try:
-        config = ScoutConfig.from_env()
-        config.validate()
+        config = ScoutConfig.from_env(sources=source_names)
+        config.validate(sources=source_names)
 
         if args.max_iterations:
             config.max_iterations = args.max_iterations
@@ -46,7 +59,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     except ConfigError as e:
         logger.error(f"Configuration error: {e}")
         print(f"Error: {e}")
-        print("Make sure REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET are set.")
+        if "reddit" in source_names:
+            print("Make sure REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET are set.")
         return 1
 
     try:
@@ -70,8 +84,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         print(f"Starting new session: {session.session_id}")
         print(f"Topic: {session.topic}")
+        print(f"Sources: {', '.join(source_names)}")
 
-    sources = [RedditSource(config.reddit)]
+    sources = []
+    if "hackernews" in source_names:
+        sources.append(HackerNewsSource(config.hackernews))
+    if "reddit" in source_names and config.reddit:
+        sources.append(RedditSource(config.reddit))
+
+    if not sources:
+        print("Error: No sources configured.")
+        return 1
 
     agent = IngestionAgent(session, sources, config)
 
@@ -95,7 +118,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_list(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
-    
+
     data_dir = os.environ.get("SCOUT_DATA_DIR", "data/sessions")
     manager = SessionManager(data_dir)
     sessions = manager.list_sessions()
@@ -112,7 +135,9 @@ def cmd_list(args: argparse.Namespace) -> int:
         docs = stats.get("docs_collected", 0)
         topic = s.get("topic", "")[:38]
         updated = s.get("updated_at", "")[:19]
-        print(f"{s.get('session_id', ''):<12} {topic:<40} {s.get('status', ''):<12} {docs:<8} {updated}")
+        print(
+            f"{s.get('session_id', ''):<12} {topic:<40} {s.get('status', ''):<12} {docs:<8} {updated}"
+        )
 
     return 0
 
@@ -135,17 +160,22 @@ def cmd_export(args: argparse.Namespace) -> int:
     elif args.format == "json":
         docs = list(storage.get_all_documents())
         snippets = list(storage.get_all_snippets())
-        
+
         output_file = output_dir / "export.json"
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         with open(output_file, "w") as f:
-            json.dump({
-                "session_id": args.session_id,
-                "documents": [d.model_dump(mode="json") for d in docs],
-                "snippets": [s.model_dump(mode="json") for s in snippets],
-            }, f, indent=2, default=str)
-        
+            json.dump(
+                {
+                    "session_id": args.session_id,
+                    "documents": [d.model_dump(mode="json") for d in docs],
+                    "snippets": [s.model_dump(mode="json") for s in snippets],
+                },
+                f,
+                indent=2,
+                default=str,
+            )
+
         print(f"Exported to: {output_file}")
         print(f"  Documents: {len(docs)}")
         print(f"  Snippets: {len(snippets)}")
@@ -198,15 +228,29 @@ def main() -> int:
         prog="scout",
         description="Scout - Product Discovery Research Agent",
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     run_parser = subparsers.add_parser("run", help="Run research on a topic")
     run_parser.add_argument("topic", nargs="?", help="Topic to research")
-    run_parser.add_argument("--resume", "-r", metavar="SESSION_ID", help="Resume a paused session")
-    run_parser.add_argument("--max-iterations", "-i", type=int, help="Maximum iterations")
-    run_parser.add_argument("--max-documents", "-d", type=int, help="Maximum documents to collect")
+    run_parser.add_argument(
+        "--resume", "-r", metavar="SESSION_ID", help="Resume a paused session"
+    )
+    run_parser.add_argument(
+        "--source",
+        "-s",
+        default="hackernews",
+        help="Data sources (comma-separated): hackernews, reddit (default: hackernews)",
+    )
+    run_parser.add_argument(
+        "--max-iterations", "-i", type=int, help="Maximum iterations"
+    )
+    run_parser.add_argument(
+        "--max-documents", "-d", type=int, help="Maximum documents to collect"
+    )
     run_parser.set_defaults(func=cmd_run)
 
     list_parser = subparsers.add_parser("list", help="List all sessions")
@@ -214,7 +258,13 @@ def main() -> int:
 
     export_parser = subparsers.add_parser("export", help="Export session data")
     export_parser.add_argument("session_id", help="Session ID to export")
-    export_parser.add_argument("--format", "-f", choices=["jsonl", "json"], default="jsonl", help="Export format")
+    export_parser.add_argument(
+        "--format",
+        "-f",
+        choices=["jsonl", "json"],
+        default="jsonl",
+        help="Export format",
+    )
     export_parser.add_argument("--output", "-o", help="Output directory")
     export_parser.set_defaults(func=cmd_export)
 

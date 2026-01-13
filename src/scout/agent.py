@@ -83,6 +83,9 @@ class IngestionAgent:
     def _seed_tasks(self) -> None:
         logger.info("Seeding initial tasks")
 
+        queries = self._generate_semantic_queries(self.session.topic)
+        logger.info(f"Generated {len(queries)} semantic queries")
+
         for source_name, source in self.sources.items():
             try:
                 entities = source.discover(self.session.topic, limit=5)
@@ -90,26 +93,35 @@ class IngestionAgent:
                     self._add_search_task(
                         source_name, entity.name, "listing_top", time_filter="month"
                     )
-                    self._add_search_task(
-                        source_name, entity.name, "search", query=self.session.topic
-                    )
             except Exception as e:
                 logger.warning(f"Failed to discover entities from {source_name}: {e}")
 
-            self._add_search_task(
-                source_name, "all", "search", query=self.session.topic
-            )
-            self._add_search_task(
-                source_name, "all", "search", query=f"{self.session.topic} problems"
-            )
-            self._add_search_task(
-                source_name, "all", "search", query=f"{self.session.topic} frustrating"
-            )
+            try:
+                adapted_tasks = source.adapt_queries(queries, self.session.topic)
+                for task in adapted_tasks:
+                    if task.task_id not in [t.task_id for t in self.session.task_queue]:
+                        self.session.task_queue.append(task)
+                logger.info(
+                    f"Added {len(adapted_tasks)} adapted tasks from {source_name}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to adapt queries for {source_name}: {e}")
 
         self._log_event(
             "tasks_seeded", output={"task_count": len(self.session.task_queue)}
         )
         logger.info(f"Seeded {len(self.session.task_queue)} initial tasks")
+
+    def _generate_semantic_queries(self, topic: str) -> list[str]:
+        queries = [
+            topic,
+            f"{topic} problems",
+            f"{topic} frustrating",
+            f"{topic} hate",
+            f"{topic} alternative",
+            f"why is {topic} so hard",
+        ]
+        return queries
 
     def _add_search_task(
         self,

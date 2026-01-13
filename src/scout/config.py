@@ -23,10 +23,23 @@ def get_optional_env(name: str, default: str) -> str:
 @dataclass
 class RedditConfig:
     client_id: str = field(default_factory=lambda: get_required_env("REDDIT_CLIENT_ID"))
-    client_secret: str = field(default_factory=lambda: get_required_env("REDDIT_CLIENT_SECRET"))
-    user_agent: str = field(default_factory=lambda: get_optional_env("REDDIT_USER_AGENT", "scout/0.1"))
+    client_secret: str = field(
+        default_factory=lambda: get_required_env("REDDIT_CLIENT_SECRET")
+    )
+    user_agent: str = field(
+        default_factory=lambda: get_optional_env("REDDIT_USER_AGENT", "scout/0.1")
+    )
     rate_limit_per_minute: int = 60
     request_delay_seconds: float = 1.0
+
+
+@dataclass
+class HackerNewsConfig:
+    rate_limit_per_minute: int = 30
+    request_delay_seconds: float = 0.5
+    max_comments_per_story: int = 100
+    comment_depth_limit: int = 5
+    hits_per_page: int = 100
 
 
 @dataclass
@@ -40,21 +53,29 @@ class LLMConfig:
 
 @dataclass
 class ScoutConfig:
-    data_dir: str = field(default_factory=lambda: get_optional_env("SCOUT_DATA_DIR", "data/sessions"))
+    data_dir: str = field(
+        default_factory=lambda: get_optional_env("SCOUT_DATA_DIR", "data/sessions")
+    )
     max_iterations: int = 60
     max_documents: int = 200
     saturation_threshold: float = 0.2
     saturation_window: int = 10
     parallel_workers: int = 5
     deep_comments: str = "auto"
-    reddit: RedditConfig = field(default_factory=RedditConfig)
+    reddit: RedditConfig | None = None
+    hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
 
     @classmethod
-    def from_env(cls) -> "ScoutConfig":
-        return cls()
+    def from_env(cls, sources: list[str] | None = None) -> "ScoutConfig":
+        sources = sources or ["hackernews"]
+        reddit_config = None
+        if "reddit" in sources:
+            reddit_config = RedditConfig()
+        return cls(reddit=reddit_config)
 
-    def validate(self) -> None:
+    def validate(self, sources: list[str] | None = None) -> None:
+        sources = sources or ["hackernews"]
         if self.max_iterations < 1:
             raise ConfigError("max_iterations must be at least 1")
         if self.max_documents < 1:
@@ -65,4 +86,8 @@ class ScoutConfig:
             raise ConfigError("parallel_workers must be at least 1")
         if self.deep_comments not in ("auto", "always", "never"):
             raise ConfigError("deep_comments must be 'auto', 'always', or 'never'")
+        if "reddit" in sources and self.reddit is None:
+            raise ConfigError(
+                "Reddit config required but REDDIT_CLIENT_ID/SECRET not set"
+            )
         logger.info("Configuration validated successfully")

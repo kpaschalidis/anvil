@@ -124,6 +124,35 @@ class RedditSource:
         )
         self._reddit: praw.Reddit | None = None
 
+    def adapt_queries(self, queries: list[str], topic: str) -> list[SearchTask]:
+        tasks: list[SearchTask] = []
+        for query in queries:
+            tasks.append(
+                SearchTask(
+                    source="reddit",
+                    source_entity="all",
+                    mode="search",
+                    query=query,
+                )
+            )
+            tasks.append(
+                SearchTask(
+                    source="reddit",
+                    source_entity="all",
+                    mode="search",
+                    query=f"{query} problems",
+                )
+            )
+        tasks.append(
+            SearchTask(
+                source="reddit",
+                source_entity="all",
+                mode="search",
+                query=f"{topic} frustrating",
+            )
+        )
+        return tasks
+
     @property
     def reddit(self) -> praw.Reddit:
         if self._reddit is None:
@@ -304,7 +333,9 @@ class RedditSource:
             if comment_text:
                 raw_text += f"--- COMMENTS ---\n{comment_text}"
 
-            published_at = datetime.fromtimestamp(submission.created_utc, tz=timezone.utc)
+            published_at = datetime.fromtimestamp(
+                submission.created_utc, tz=timezone.utc
+            )
 
             doc = RawDocument(
                 doc_id=f"reddit:{submission.fullname}",

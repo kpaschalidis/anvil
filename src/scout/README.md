@@ -1,6 +1,13 @@
 # Scout - Product Discovery Agent
 
-Research agent that collects pain points from Reddit.
+Research agent that collects pain points from online sources.
+
+## Supported Sources
+
+| Source | Auth Required | Status |
+|--------|---------------|--------|
+| **Hacker News** | None | ✅ Ready |
+| Reddit | API approval needed | ⚠️ Requires approval |
 
 ## Setup
 
@@ -8,25 +15,28 @@ Research agent that collects pain points from Reddit.
 # Install with scout extras
 uv pip install -e ".[scout]"
 
-# Set Reddit credentials (create app at https://reddit.com/prefs/apps)
-export REDDIT_CLIENT_ID="your_client_id"
-export REDDIT_CLIENT_SECRET="your_client_secret"
-export REDDIT_USER_AGENT="scout/0.1 by u/your_username"  # optional
+# Set LLM API key (one of these)
+export OPENAI_API_KEY="your_key"
+# or
+export ANTHROPIC_API_KEY="your_key"
 ```
 
 ## Usage
 
 ```bash
-# Run research on a topic
-uv run scout run "insurance broker software problems"
+# Run research with Hacker News (default, no auth needed)
+uv run scout run "CRM pain points"
+
+# Specify source explicitly
+uv run scout run "insurance software problems" --source hackernews
 
 # With limits
-uv run scout run "CRM small business" --max-iterations 30 --max-documents 50
+uv run scout run "project management" --max-iterations 30 --max-documents 50
 
 # Resume paused session
 uv run scout run --resume <session_id>
 
-# List sessions (no credentials needed)
+# List sessions
 uv run scout list
 
 # Show session stats
@@ -49,10 +59,21 @@ Sessions stored in `data/sessions/<session_id>/`:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `REDDIT_CLIENT_ID` | Yes (for run) | - | Reddit app client ID |
-| `REDDIT_CLIENT_SECRET` | Yes (for run) | - | Reddit app secret |
-| `REDDIT_USER_AGENT` | No | `scout/0.1` | Reddit user agent |
+| `OPENAI_API_KEY` | Yes* | - | OpenAI API key for extraction |
+| `ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key (alternative) |
 | `SCOUT_DATA_DIR` | No | `data/sessions` | Data directory |
+
+*One LLM API key required for extraction.
+
+## Reddit (if approved)
+
+Reddit now requires API approval. If you have approval:
+
+```bash
+export REDDIT_CLIENT_ID="your_id"
+export REDDIT_CLIENT_SECRET="your_secret"
+uv run scout run "topic" --source reddit
+```
 
 ## Tests
 
