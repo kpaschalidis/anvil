@@ -62,7 +62,9 @@ class ParallelExecutor:
         rate = self.success_tracker.rate()
         if rate < LOW_SUCCESS_RATE_THRESHOLD:
             scaled = max(1, base // 2)
-            logger.info(f"Scaling down workers: {base} -> {scaled} (success rate {rate:.2f})")
+            logger.info(
+                f"Scaling down workers: {base} -> {scaled} (success rate {rate:.2f})"
+            )
             return scaled
         return base
 

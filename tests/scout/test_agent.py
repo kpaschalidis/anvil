@@ -102,6 +102,7 @@ class TestCircuitBreaker:
         cb.record_failure()
         assert cb.can_execute() is False
         import time
+
         time.sleep(0.02)
         assert cb.can_execute() is True
 
@@ -110,6 +111,7 @@ class TestCircuitBreaker:
         cb.record_failure()
         cb.record_failure()
         import time
+
         time.sleep(0.02)
         assert cb.can_execute() is True
         cb.record_success()
@@ -174,7 +176,9 @@ class TestParallelExecutorExecution:
         def failing_search(task: SearchTask) -> Page[DocumentRef]:
             raise ValueError("Search failed")
 
-        tasks = [SearchTask(source="test", source_entity="all", mode="search", query="q")]
+        tasks = [
+            SearchTask(source="test", source_entity="all", mode="search", query="q")
+        ]
         results = executor.execute_searches(tasks, failing_search)
         assert len(results) == 1
         assert results[0].success is False
@@ -185,10 +189,13 @@ class TestParallelExecutorExecution:
 
         def slow_search(task: SearchTask) -> Page[DocumentRef]:
             import time
+
             time.sleep(0.05)
             return Page(items=[], exhausted=True)
 
-        tasks = [SearchTask(source="test", source_entity="all", mode="search", query="q")]
+        tasks = [
+            SearchTask(source="test", source_entity="all", mode="search", query="q")
+        ]
         results = executor.execute_searches(tasks, slow_search)
         assert results[0].duration_ms is not None
         assert results[0].duration_ms >= 50
