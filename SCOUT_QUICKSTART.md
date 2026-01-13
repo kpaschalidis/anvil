@@ -116,13 +116,67 @@ uv run scout run "topic" --max-cost 2.0  # Stop at $2
 uv run scout run "topic" --extraction-prompt v2  # Use prompt with few-shot examples
 ```
 
+### Control Performance
+
+```bash
+# More workers for faster parallel search
+uv run scout run "topic" --workers 8
+
+# Always fetch deep comment threads
+uv run scout run "topic" --deep-comments always
+
+# Never fetch comments (faster, cheaper)
+uv run scout run "topic" --deep-comments never
+```
+
+### Filter Content Aggressively
+
+```bash
+# Skip short posts and low-scoring content
+uv run scout run "topic" \
+  --min-content-length 200 \
+  --min-score 15
+```
+
+### Use Cheaper Models
+
+```bash
+# Use GPT-4o-mini for extraction (4x cheaper)
+uv run scout run "topic" --extraction-model gpt-4o-mini
+```
+
 ### Custom Limits
 
 ```bash
 uv run scout run "topic" \
   --max-iterations 40 \
   --max-documents 100 \
-  --parallel-workers 8
+  --workers 8
+```
+
+### Combined: Fast & Cheap Research
+
+```bash
+uv run scout run "topic" \
+  --profile quick \
+  --extraction-model gpt-4o-mini \
+  --workers 3 \
+  --deep-comments never \
+  --min-content-length 200 \
+  --min-score 10 \
+  --max-cost 0.25
+```
+
+### Combined: Deep & Thorough Research
+
+```bash
+uv run scout run "topic" \
+  --profile deep \
+  --extraction-model gpt-4o \
+  --workers 10 \
+  --deep-comments always \
+  --min-content-length 50 \
+  --max-cost 5.0
 ```
 
 ### Structured JSON Logging
@@ -130,6 +184,54 @@ uv run scout run "topic" \
 ```bash
 uv run scout run "topic" --log-format json > research.log
 ```
+
+---
+
+## 🎛️ Complete CLI Reference
+
+### Research Limits
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--max-iterations, -i` | int | 60 | Maximum search iterations |
+| `--max-documents, -d` | int | 200 | Maximum documents to collect |
+| `--max-cost` | float | None | Budget limit in USD |
+
+### Performance & Scaling
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--workers, -w` | int | 5 | Parallel search workers |
+| `--deep-comments` | auto\|always\|never | auto | Comment depth strategy |
+
+### Content Filtering
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--min-content-length` | int | 100 | Skip documents shorter than N chars |
+| `--min-score` | int | 5 | Skip documents with score below N |
+
+### LLM Configuration
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--extraction-model` | string | gpt-4o | Model for extraction |
+| `--extraction-prompt` | v1\|v2 | v1 | Prompt version |
+
+### Session Management
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--profile, -p` | quick\|standard\|deep | standard | Research profile |
+| `--resume, -r` | string | None | Resume session by ID |
+| `--source, -s` | string | hackernews | Comma-separated sources |
+
+### Logging
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--log-format` | text\|json | text | Log output format |
+| `--verbose` | flag | False | Enable debug logging |
 
 ---
 
@@ -257,12 +359,20 @@ Open two terminals:
 - **Terminal 2:** `uv run scout watch <session_id> --stream snippets`
 
 ### 4. Filter Content Aggressively
-Edit `src/scout/config.py` to adjust pre-filtering:
+Use CLI flags for quick filtering:
+
+```bash
+uv run scout run "topic" --min-content-length 150 --min-score 10
+```
+
+Or Python API for more control:
 
 ```python
-filter: FilterConfig(
-    min_content_length=150,  # Skip short posts
-    min_score=10,            # Skip low-scoring posts
+from scout.filters import FilterConfig
+
+config.filter = FilterConfig(
+    min_content_length=150,
+    min_score=10,
     skip_deleted_authors=True
 )
 ```

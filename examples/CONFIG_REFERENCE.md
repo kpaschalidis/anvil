@@ -38,14 +38,18 @@ uv run scout run <topic> [options]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--profile` | `quick\|standard\|deep` | `standard` | Research profile preset |
-| `--source` | string | `hackernews` | Comma-separated sources |
-| `--max-iterations` | int | 60 | Max search iterations |
-| `--max-documents` | int | 200 | Max documents to collect |
+| `--profile, -p` | `quick\|standard\|deep` | `standard` | Research profile preset |
+| `--source, -s` | string | `hackernews` | Comma-separated sources |
+| `--max-iterations, -i` | int | 60 | Max search iterations |
+| `--max-documents, -d` | int | 200 | Max documents to collect |
 | `--max-cost` | float | None | Budget limit in USD |
-| `--parallel-workers` | int | 5 | Concurrent search tasks |
-| `--extraction-prompt` | string | `v1` | Extraction prompt version |
-| `--resume` | string | None | Resume session by ID |
+| `--workers, -w` | int | 5 | Parallel search workers |
+| `--deep-comments` | `auto\|always\|never` | `auto` | Comment depth strategy |
+| `--extraction-model` | string | `gpt-4o` | LLM model for extraction |
+| `--extraction-prompt` | `v1\|v2` | `v1` | Extraction prompt version |
+| `--min-content-length` | int | 100 | Skip documents shorter than N chars |
+| `--min-score` | int | 5 | Skip documents with score below N |
+| `--resume, -r` | string | None | Resume session by ID |
 | `--log-format` | `text\|json` | `text` | Log output format |
 | `--verbose` | flag | False | Enable debug logging |
 
@@ -59,10 +63,22 @@ uv run scout run "CRM tools" --profile quick --max-cost 1.0
 uv run scout run "topic" --profile deep \
   --max-iterations 100 \
   --max-documents 300 \
-  --parallel-workers 8
+  --workers 8
 
 # Use improved extraction prompt
 uv run scout run "topic" --extraction-prompt v2
+
+# Fast & cheap: mini model + no comments
+uv run scout run "topic" \
+  --extraction-model gpt-4o-mini \
+  --deep-comments never \
+  --workers 10
+
+# High quality: filter aggressively + always deep comments
+uv run scout run "topic" \
+  --min-content-length 200 \
+  --min-score 15 \
+  --deep-comments always
 
 # Resume paused session
 uv run scout run --resume abc123
@@ -343,51 +359,89 @@ config = ScoutConfig(
 ## Performance Tuning
 
 ### Maximize Speed
+
+**CLI:**
+```bash
+uv run scout run "topic" \
+  --workers 10 \
+  --deep-comments never \
+  --min-content-length 200 \
+  --min-score 15 \
+  --extraction-model gpt-4o-mini
+```
+
+**Python:**
 ```python
 config = ScoutConfig(
-    parallel_workers=10,              # More workers
-    deep_comments="never",            # Skip comment depth
+    parallel_workers=10,
+    deep_comments="never",
     filter=FilterConfig(
-        min_content_length=200,       # Skip short content
-        min_score=15                  # Only popular posts
+        min_content_length=200,
+        min_score=15
     ),
     llm=LLMConfig(
-        extraction_model="gpt-4o-mini"  # Fast model
+        extraction_model="gpt-4o-mini"
     )
 )
 ```
 
 ### Maximize Quality
+
+**CLI:**
+```bash
+uv run scout run "topic" \
+  --deep-comments always \
+  --extraction-model gpt-4o \
+  --extraction-prompt v2 \
+  --min-content-length 50 \
+  --min-score 3 \
+  --profile deep
+```
+
+**Python:**
 ```python
 config = ScoutConfig(
-    deep_comments="always",          # Always fetch deep comments
+    deep_comments="always",
     filter=FilterConfig(
-        min_content_length=50,        # Don't skip too much
+        min_content_length=50,
         min_score=3
     ),
     snippet_validation=SnippetValidationConfig(
-        min_confidence=0.8            # High quality only
+        min_confidence=0.8
     ),
     llm=LLMConfig(
         extraction_model="gpt-4o",
         extraction_prompt_version="v2"
     ),
-    saturation_threshold=0.15        # More thorough
+    saturation_threshold=0.15
 )
 ```
 
 ### Minimize Cost
+
+**CLI:**
+```bash
+uv run scout run "topic" \
+  --max-cost 0.25 \
+  --extraction-model gpt-4o-mini \
+  --workers 3 \
+  --deep-comments never \
+  --min-content-length 300 \
+  --min-score 20
+```
+
+**Python:**
 ```python
 config = ScoutConfig(
-    max_cost_usd=0.25,               # Hard budget
+    max_cost_usd=0.25,
     filter=FilterConfig(
-        min_content_length=300,       # Aggressive filtering
+        min_content_length=300,
         min_score=20
     ),
     llm=LLMConfig(
-        extraction_model="gpt-4o-mini"  # Cheap model
+        extraction_model="gpt-4o-mini"
     ),
-    parallel_workers=3                # Fewer workers
+    parallel_workers=3
 )
 ```
 

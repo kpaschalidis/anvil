@@ -93,14 +93,29 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     try:
         config = ScoutConfig.from_profile(args.profile, sources=source_names)
-        config.validate(sources=source_names)
-
+        
         if args.max_iterations:
             config.max_iterations = args.max_iterations
         if args.max_documents:
             config.max_documents = args.max_documents
         if args.max_cost:
             config.max_cost_usd = args.max_cost
+        if args.workers:
+            config.parallel_workers = args.workers
+        if args.deep_comments:
+            config.deep_comments = args.deep_comments
+        if args.extraction_model:
+            config.llm.extraction_model = args.extraction_model
+        
+        if args.min_content_length is not None or args.min_score is not None:
+            from scout.filters import FilterConfig
+            config.filter = FilterConfig(
+                min_content_length=args.min_content_length if args.min_content_length is not None else config.filter.min_content_length,
+                min_score=args.min_score if args.min_score is not None else config.filter.min_score,
+                skip_deleted_authors=config.filter.skip_deleted_authors,
+            )
+        
+        config.validate(sources=source_names)
 
     except ConfigError as e:
         logger.error(f"Configuration error: {e}")
@@ -429,6 +444,36 @@ def main() -> int:
         "--extraction-prompt",
         choices=["v1", "v2"],
         help="Extraction prompt version to use (default: session setting)",
+    )
+    run_parser.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        metavar="N",
+        help="Number of parallel workers (default: 5)",
+    )
+    run_parser.add_argument(
+        "--deep-comments",
+        choices=["auto", "always", "never"],
+        metavar="MODE",
+        help="Comment depth strategy: auto (default), always, never",
+    )
+    run_parser.add_argument(
+        "--extraction-model",
+        metavar="MODEL",
+        help="LLM model for extraction (e.g., gpt-4o, gpt-4o-mini, claude-sonnet-4)",
+    )
+    run_parser.add_argument(
+        "--min-content-length",
+        type=int,
+        metavar="N",
+        help="Skip documents shorter than N characters (filter)",
+    )
+    run_parser.add_argument(
+        "--min-score",
+        type=int,
+        metavar="N",
+        help="Skip documents with score below N (filter)",
     )
     run_parser.set_defaults(func=cmd_run)
 
