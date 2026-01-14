@@ -5,13 +5,8 @@ from typing import Dict
 from common.text_template import render_template
 
 
-def load_vendored_prompts() -> Dict[str, Dict[str, str] | str]:
-    base = (
-        Path(__file__).resolve().parent
-        / "vendor"
-        / "claude-code-system-prompts"
-        / "system-prompts"
-    )
+def load_prompt_blocks() -> Dict[str, Dict[str, str] | str]:
+    base = Path(__file__).resolve().parent / "blocks"
 
     def read_block(filename: str) -> str:
         path = base / filename
@@ -20,18 +15,20 @@ def load_vendored_prompts() -> Dict[str, Dict[str, str] | str]:
         return path.read_text(encoding="utf-8")
 
     return {
-        "main": read_block("system-prompt-main-system-prompt.md"),
+        "main": read_block("system.md"),
         "tool_descriptions": {
-            "read_file": read_block("tool-description-readfile.md"),
-            "apply_edit": read_block("tool-description-edit.md"),
-            "write_file": read_block("tool-description-write.md"),
-            "run_command": read_block("tool-description-bash.md"),
-            "list_files": read_block("tool-description-glob.md"),
-            "task": read_block("tool-description-task.md"),
+            "read_file": read_block("tools/readfile.md"),
+            "apply_edit": read_block("tools/edit.md"),
+            "write_file": read_block("tools/write.md"),
+            "run_command": read_block("tools/bash.md"),
+            "list_files": read_block("tools/glob.md"),
+            "grep": read_block("tools/grep.md"),
+            "skill": read_block("tools/skill.md"),
+            "task": read_block("tools/task.md"),
         },
         "agent_prompts": {
-            "task": read_block("agent-prompt-task-tool.md"),
-            "explore": read_block("agent-prompt-explore.md"),
+            "task": read_block("agents/task.md"),
+            "explore": read_block("agents/explore.md"),
         },
     }
 

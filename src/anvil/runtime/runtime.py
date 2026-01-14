@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
@@ -13,7 +14,7 @@ from anvil.linter import Linter
 from anvil.parser import ResponseParser
 from anvil.shell import ShellRunner
 from anvil.tools import ToolRegistry
-from anvil.prompts import build_main_system_prompt, load_vendored_prompts
+from anvil.prompts import build_main_system_prompt, load_prompt_blocks
 from anvil.ext.markdown_executor import MarkdownExecutor
 from anvil.ext.markdown_loader import MarkdownIndex
 from anvil.sessions.manager import SessionManager
@@ -48,7 +49,7 @@ class AnvilRuntime:
         self.agent_registry = AgentRegistry(self.root_path)
         self.agent_registry.reload()
 
-        self.vendored_prompts = load_vendored_prompts()
+        self.vendored_prompts = load_prompt_blocks()
         self._register_tools()
         self.subagent_runner = SubagentRunner(
             root_path=self.root_path,
@@ -126,6 +127,28 @@ class AnvilRuntime:
         )
 
         self.tools.register_tool(
+            name="grep",
+            description="Search for patterns in files using ripgrep",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regex pattern to search"},
+                    "path": {
+                        "type": "string",
+                        "description": "File or directory to search",
+                        "default": ".",
+                    },
+                    "include": {
+                        "type": "string",
+                        "description": "Glob pattern for files to include (e.g. '*.py')",
+                    },
+                },
+                "required": ["pattern"],
+            },
+            implementation=self._tool_grep,
+        )
+
+        self.tools.register_tool(
             name="run_command",
             description="Execute a shell command in the repository",
             parameters={
@@ -176,6 +199,19 @@ class AnvilRuntime:
             implementation=self._tool_apply_edit,
         )
 
+        self.tools.register_tool(
+            name="skill",
+            description="Load a skill's instructions into context",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the skill to load"},
+                },
+                "required": ["name"],
+            },
+            implementation=self._tool_skill,
+        )
+
     def _register_subagent_tools(self) -> None:
         task_tool = TaskTool(self.subagent_runner)
         self.tools.register_tool(
@@ -211,6 +247,35 @@ class AnvilRuntime:
         files = self.files.list_files(pattern)
         return "\n".join(files) if files else "No files found"
 
+    def _tool_grep(
+        self, pattern: str, path: str = ".", include: str | None = None
+    ) -> str:
+        base_path = str(self.root_path / path)
+        use_rg = shutil.which("rg") is not None
+        if use_rg:
+            cmd = ["rg", "-n", "--no-heading"]
+            if include:
+                cmd.extend(["--glob", include])
+            cmd.extend([pattern, base_path])
+        else:
+            cmd = ["grep", "-R", "-n"]
+            if include:
+                cmd.extend(["--include", include])
+            cmd.extend([pattern, base_path])
+
+        result = subprocess.run(
+            cmd,
+            cwd=self.root_path,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode == 0:
+            return result.stdout
+        if result.returncode == 1:
+            return "No matches"
+        return result.stderr or "Search failed"
+
     def _tool_run_command(self, command: str) -> str:
         result = self.shell.run_command(command)
 
@@ -233,6 +298,12 @@ class AnvilRuntime:
             self.last_edited_files.append(filepath)
             return f"Edit applied successfully to {filepath}"
         return f"Failed to apply edit to {filepath} - search block not found"
+
+    def _tool_skill(self, name: str) -> str:
+        entry = self.markdown_index.skills.get(name)
+        if not entry:
+            return f"Skill not found: {name}"
+        return entry.body
 
     def _set_system_prompt(self):
         memory_path = self.root_path / "ANVIL.md"

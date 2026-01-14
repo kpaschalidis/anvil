@@ -42,3 +42,4 @@ htmlcov/
 data/
 transcripts/
 local-only/
+.anvil/sessions

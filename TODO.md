@@ -1,8 +1,5 @@
-- [x] Phase 0: add shared common modules and set up new Anvil package structure
-- [x] Phase 1: vendor Claude-style prompts and add prompt composer
-- [x] Phase 2: implement markdown commands/skills loader+executor and discovery/reload commands
-- [x] Phase 3: add REPL runtime + router + builtins and wire CLI
-- [x] Phase 4: add sessions schema/manager with autosave
-- [x] Phase 5: add ANVIL.md memory injection
-- [x] Phase 6: add subagent registry + task tool
-- [x] Phase 7: add starter commands and tests
+- [x] Restructure prompt blocks into `src/anvil/prompts/blocks/`
+- [x] Update prompt composer to load first-party blocks and include grep/skill tools
+- [x] Add grep tool to runtime tool registry
+- [x] Add skill tool to runtime tool registry
+- [x] Remove legacy vendor prompt tree
