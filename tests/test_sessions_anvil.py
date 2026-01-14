@@ -19,7 +19,7 @@ def test_session_create_save_load(tmp_path: Path):
     manager.save_current(history)
 
     session_id = manager.current.metadata.id
-    session_path = tmp_path / ".anvil" / "sessions" / f"{session_id}.json"
+    session_path = tmp_path / ".anvil" / "sessions" / "default" / f"{session_id}.json"
     assert session_path.exists()
 
     loaded = manager.load_session(session_id)

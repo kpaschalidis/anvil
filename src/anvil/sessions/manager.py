@@ -18,9 +18,12 @@ class SessionManager:
         model: str,
         system_prompt_hash: str,
         system_prompt_version: str,
+        namespace: str = "default",
     ):
         self.root_path = Path(root_path)
-        self.sessions_dir = self.root_path / ".anvil" / "sessions"
+        self.namespace = namespace
+        self.legacy_sessions_dir = self.root_path / ".anvil" / "sessions"
+        self.sessions_dir = self.legacy_sessions_dir / namespace
         self.system_prompt_hash = system_prompt_hash
         self.system_prompt_version = system_prompt_version
         self.current: SessionState = self._create_session(model=model)
@@ -60,8 +63,11 @@ class SessionManager:
         atomic_write_json(path, self.current.model_dump())
 
     def load_session(self, session_id: str) -> SessionState | None:
-        path = self.sessions_dir / f"{session_id}.json"
-        data = load_json(path)
+        primary = self.sessions_dir / f"{session_id}.json"
+        data = load_json(primary)
+        if not data and self.namespace == "default":
+            legacy = self.legacy_sessions_dir / f"{session_id}.json"
+            data = load_json(legacy)
         if not data:
             return None
         session = SessionState.model_validate(data)
@@ -71,13 +77,19 @@ class SessionManager:
         return session
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        if not self.sessions_dir.exists():
-            return []
         sessions = []
-        for path in self.sessions_dir.glob("*.json"):
-            data = load_json(path)
-            if data:
-                sessions.append(data)
+        if self.sessions_dir.exists():
+            for path in self.sessions_dir.glob("*.json"):
+                data = load_json(path)
+                if data:
+                    sessions.append(data)
+
+        if self.namespace == "default" and self.legacy_sessions_dir.exists():
+            for path in self.legacy_sessions_dir.glob("*.json"):
+                data = load_json(path)
+                if data:
+                    sessions.append(data)
+
         return sorted(
             sessions,
             key=lambda item: item.get("metadata", {}).get("updated_at", ""),

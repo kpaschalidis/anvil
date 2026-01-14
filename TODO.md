@@ -3,3 +3,10 @@
 - [x] Add grep tool to runtime tool registry
 - [x] Add skill tool to runtime tool registry
 - [x] Remove legacy vendor prompt tree
+
+- [x] Add `src/anvil/modes/` with `ModeConfig`, registry, and `coding` mode defaults
+- [x] Make runtime mode-aware (apply defaults + namespace + optional tool registration)
+- [x] Make prompt composer search across `prompt_block_dirs`
+- [x] Namespace sessions under `.anvil/sessions/<namespace>/` with legacy fallback
+- [x] Update CLI to accept `mode` argument without breaking file args
+- [x] Update tests and run `uv run pytest -v`

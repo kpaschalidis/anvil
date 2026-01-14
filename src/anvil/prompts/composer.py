@@ -5,30 +5,44 @@ from typing import Dict
 from common.text_template import render_template
 
 
-def load_prompt_blocks() -> Dict[str, Dict[str, str] | str]:
-    base = Path(__file__).resolve().parent / "blocks"
+def load_prompt_blocks(
+    prompt_block_dirs: list[Path] | None = None,
+) -> Dict[str, Dict[str, str] | str]:
+    if prompt_block_dirs is None:
+        prompt_block_dirs = [Path(__file__).resolve().parent / "blocks"]
 
-    def read_block(filename: str) -> str:
-        path = base / filename
-        if not path.exists():
-            return ""
-        return path.read_text(encoding="utf-8")
+    def find_block(relative_path: str) -> str:
+        for directory in prompt_block_dirs:
+            path = directory / relative_path
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        return ""
+
+    tool_path_overrides = {
+        "apply_edit": "tools/edit.md",
+        "run_command": "tools/bash.md",
+        "list_files": "tools/glob.md",
+    }
+
+    def tool_description(tool_name: str) -> str:
+        rel = tool_path_overrides.get(tool_name, f"tools/{tool_name}.md")
+        return find_block(rel)
 
     return {
-        "main": read_block("system.md"),
+        "main": find_block("system.md"),
         "tool_descriptions": {
-            "read_file": read_block("tools/readfile.md"),
-            "apply_edit": read_block("tools/edit.md"),
-            "write_file": read_block("tools/write.md"),
-            "run_command": read_block("tools/bash.md"),
-            "list_files": read_block("tools/glob.md"),
-            "grep": read_block("tools/grep.md"),
-            "skill": read_block("tools/skill.md"),
-            "task": read_block("tools/task.md"),
+            "read_file": tool_description("readfile"),
+            "apply_edit": tool_description("apply_edit"),
+            "write_file": tool_description("write"),
+            "run_command": tool_description("run_command"),
+            "list_files": tool_description("list_files"),
+            "grep": tool_description("grep"),
+            "skill": tool_description("skill"),
+            "task": tool_description("task"),
         },
         "agent_prompts": {
-            "task": read_block("agents/task.md"),
-            "explore": read_block("agents/explore.md"),
+            "task": find_block("agents/task.md"),
+            "explore": find_block("agents/explore.md"),
         },
     }
 

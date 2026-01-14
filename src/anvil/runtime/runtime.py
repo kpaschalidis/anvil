@@ -20,11 +20,22 @@ from anvil.ext.markdown_loader import MarkdownIndex
 from anvil.sessions.manager import SessionManager
 from anvil.subagents.registry import AgentRegistry
 from anvil.subagents.task_tool import SubagentRunner, TaskTool
+from anvil.modes.base import ModeConfig
 
 
 class AnvilRuntime:
-    def __init__(self, root_path: str, config: AgentConfig | None = None):
+    def __init__(
+        self,
+        root_path: str,
+        config: AgentConfig | None = None,
+        mode: ModeConfig | None = None,
+    ):
         self.root_path = Path(root_path)
+        self.mode = mode
+
+        if mode and mode.apply_defaults:
+            config = mode.apply_defaults(config or AgentConfig())
+
         self.config = config or AgentConfig()
 
         self.history = MessageHistory()
@@ -49,8 +60,15 @@ class AnvilRuntime:
         self.agent_registry = AgentRegistry(self.root_path)
         self.agent_registry.reload()
 
-        self.vendored_prompts = load_prompt_blocks()
+        core_blocks = Path(__file__).resolve().parents[1] / "prompts" / "blocks"
+        prompt_block_dirs = (mode.prompt_block_dirs if mode else []) + [core_blocks]
+        self.vendored_prompts = load_prompt_blocks(prompt_block_dirs=prompt_block_dirs)
+
+        self.session_namespace = mode.session_namespace if mode else "default"
+
         self._register_tools()
+        if mode and mode.register_tools:
+            mode.register_tools(self.tools, self)
         self.subagent_runner = SubagentRunner(
             root_path=self.root_path,
             agent_registry=self.agent_registry,
@@ -66,6 +84,7 @@ class AnvilRuntime:
         self._set_system_prompt()
         self.session_manager = SessionManager(
             self.root_path,
+            namespace=self.session_namespace,
             model=self.config.model,
             system_prompt_hash=self.system_prompt_hash,
             system_prompt_version=self.system_prompt_version,
