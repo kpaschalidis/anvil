@@ -6,7 +6,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from anvil.config import AgentConfig, resolve_model_alias
-from anvil.agent import CodingAgentWithTools
+from anvil.runtime.repl import AnvilREPL
+from anvil.runtime.runtime import AnvilRuntime
 
 
 def main():
@@ -59,12 +60,13 @@ def main():
         print("❌ Error: Not in a git repository")
         sys.exit(1)
 
-    agent = CodingAgentWithTools(root_path, config)
+    runtime = AnvilRuntime(root_path, config)
 
     for filepath in args.files:
-        agent.add_file_to_context(filepath)
+        runtime.add_file_to_context(filepath)
 
-    agent.run(initial_message=args.message)
+    repl = AnvilREPL(runtime)
+    repl.run(initial_message=args.message)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,120 @@
+import json
+import os
+from pathlib import Path
+from typing import Any, Dict
+
+from common.text_template import render_template
+from anvil.history import MessageHistory
+from anvil.subagents.registry import AgentRegistry, AgentDefinition
+
+
+class SubagentRunner:
+    def __init__(
+        self,
+        root_path: str | Path,
+        agent_registry: AgentRegistry,
+        tool_registry,
+        vendored_prompts: Dict[str, Dict[str, str] | str],
+        completion_fn,
+        default_model: str,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ):
+        self.root_path = Path(root_path)
+        self.agent_registry = agent_registry
+        self.tool_registry = tool_registry
+        self.vendored_prompts = vendored_prompts
+        self.completion_fn = completion_fn
+        self.default_model = default_model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+    def _build_system_prompt(self, agent_def: AgentDefinition | None) -> str:
+        agent_prompts = self.vendored_prompts.get("agent_prompts", {})
+        parts = [
+            agent_prompts.get("task", ""),
+            agent_prompts.get("explore", ""),
+            agent_def.body if agent_def else "",
+        ]
+        combined = "\n\n".join(part.strip() for part in parts if part.strip())
+        return render_template(
+            combined,
+            root_path=self.root_path,
+            cwd=os.getcwd(),
+        )
+
+    def run_task(
+        self,
+        prompt: str,
+        agent_name: str | None = None,
+        model: str | None = None,
+        max_iterations: int = 6,
+    ) -> str:
+        agent_def = None
+        if agent_name:
+            agent_def = self.agent_registry.agents.get(agent_name)
+
+        history = MessageHistory()
+        history.set_system_prompt(self._build_system_prompt(agent_def))
+        history.add_user_message(prompt)
+
+        messages = history.get_messages_for_api()
+        iterations = 0
+
+        while iterations < max_iterations:
+            iterations += 1
+            response = self.completion_fn(
+                model=model or (agent_def.model if agent_def else None) or self.default_model,
+                messages=messages,
+                tools=self.tool_registry.get_tool_schemas(),
+                tool_choice="auto",
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+            response_msg = response.choices[0].message
+
+            if hasattr(response_msg, "tool_calls") and response_msg.tool_calls:
+                tool_calls = response_msg.tool_calls
+                history.add_assistant_message(
+                    content=response_msg.content,
+                    tool_calls=[
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in tool_calls
+                    ],
+                )
+
+                for tool_call in tool_calls:
+                    tool_name = tool_call.function.name
+                    tool_args = json.loads(tool_call.function.arguments)
+                    result = self.tool_registry.execute_tool(tool_name, tool_args)
+                    history.add_tool_result(
+                        tool_call_id=tool_call.id,
+                        name=tool_name,
+                        result=json.dumps(result),
+                    )
+
+                messages = history.get_messages_for_api()
+                continue
+
+            if response_msg.content:
+                history.add_assistant_message(content=response_msg.content)
+                return response_msg.content
+
+            return ""
+
+        return "Subagent exceeded max iterations without a final response."
+
+
+class TaskTool:
+    def __init__(self, runner: SubagentRunner):
+        self.runner = runner
+
+    def __call__(self, prompt: str, agent: str | None = None, subagent_type: str | None = None):
+        return self.runner.run_task(prompt, agent_name=agent or subagent_type)
