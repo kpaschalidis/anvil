@@ -1,13 +1,20 @@
 import os
 from pathlib import Path
-from typing import Dict
+from typing import Callable, Dict
 
 from common.text_template import render_template
+
+TOOL_PATH_OVERRIDES = {
+    "read_file": "tools/readfile.md",
+    "write_file": "tools/write.md",
+    "run_command": "tools/bash.md",
+    "list_files": "tools/glob.md",
+}
 
 
 def load_prompt_blocks(
     prompt_block_dirs: list[Path] | None = None,
-) -> Dict[str, Dict[str, str] | str]:
+) -> Dict[str, Callable[[str], str] | str | Dict[str, str]]:
     if prompt_block_dirs is None:
         prompt_block_dirs = [Path(__file__).resolve().parent / "blocks"]
 
@@ -18,28 +25,13 @@ def load_prompt_blocks(
                 return path.read_text(encoding="utf-8")
         return ""
 
-    tool_path_overrides = {
-        "apply_edit": "tools/edit.md",
-        "run_command": "tools/bash.md",
-        "list_files": "tools/glob.md",
-    }
-
-    def tool_description(tool_name: str) -> str:
-        rel = tool_path_overrides.get(tool_name, f"tools/{tool_name}.md")
+    def get_tool_description(tool_name: str) -> str:
+        rel = TOOL_PATH_OVERRIDES.get(tool_name, f"tools/{tool_name}.md")
         return find_block(rel)
 
     return {
         "main": find_block("system.md"),
-        "tool_descriptions": {
-            "read_file": tool_description("readfile"),
-            "apply_edit": tool_description("apply_edit"),
-            "write_file": tool_description("write"),
-            "run_command": tool_description("run_command"),
-            "list_files": tool_description("list_files"),
-            "grep": tool_description("grep"),
-            "skill": tool_description("skill"),
-            "task": tool_description("task"),
-        },
+        "get_tool_description": get_tool_description,
         "agent_prompts": {
             "task": find_block("agents/task.md"),
             "explore": find_block("agents/explore.md"),
@@ -51,18 +43,19 @@ def build_main_system_prompt(
     root_path: str | Path,
     tool_names: list[str],
     memory_text: str | None,
-    vendored_blocks: Dict[str, Dict[str, str] | str],
+    vendored_blocks: Dict[str, Callable[[str], str] | str | Dict[str, str]],
 ) -> str:
     parts: list[str] = []
     main_prompt = vendored_blocks.get("main", "")
     if main_prompt:
         parts.append(main_prompt)
 
-    tool_descs = vendored_blocks.get("tool_descriptions", {})
-    for name in tool_names:
-        block = tool_descs.get(name)
-        if block:
-            parts.append(block)
+    get_tool_desc = vendored_blocks.get("get_tool_description")
+    if get_tool_desc and callable(get_tool_desc):
+        for name in tool_names:
+            block = get_tool_desc(name)
+            if block:
+                parts.append(block)
 
     if memory_text:
         parts.append("# Project Memory (ANVIL.md)\n" + memory_text.strip())

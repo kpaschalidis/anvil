@@ -6,6 +6,8 @@ class AnvilREPL:
     def __init__(self, runtime):
         self.runtime = runtime
         self.builtins = BuiltinCommands(runtime)
+        if runtime.mode and runtime.mode.extend_builtins:
+            runtime.mode.extend_builtins(self.builtins, runtime)
         self.router = InputRouter(self.builtins, runtime.markdown_index)
 
     def run(self, initial_message: str | None = None):

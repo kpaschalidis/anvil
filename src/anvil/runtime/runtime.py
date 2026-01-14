@@ -8,10 +8,7 @@ from typing import Any, Dict, List
 from common import llm
 from anvil.config import AgentConfig, resolve_model_alias
 from anvil.files import FileManager
-from anvil.git import GitRepo
 from anvil.history import MessageHistory
-from anvil.linter import Linter
-from anvil.parser import ResponseParser
 from anvil.shell import ShellRunner
 from anvil.tools import ToolRegistry
 from anvil.prompts import build_main_system_prompt, load_prompt_blocks
@@ -21,6 +18,7 @@ from anvil.sessions.manager import SessionManager
 from anvil.subagents.registry import AgentRegistry
 from anvil.subagents.task_tool import SubagentRunner, TaskTool
 from anvil.modes.base import ModeConfig
+from anvil.runtime.hooks import RuntimeHooks
 
 
 class AnvilRuntime:
@@ -39,17 +37,14 @@ class AnvilRuntime:
         self.config = config or AgentConfig()
 
         self.history = MessageHistory()
-        self.git = GitRepo(str(root_path))
         self.files = FileManager(str(root_path))
         self.shell = ShellRunner(str(root_path))
-        self.parser = ResponseParser()
         self.tools = ToolRegistry()
-        self.linter = Linter(str(root_path))
 
         self.files_in_context: List[str] = []
         self.interrupted = False
-        self.last_commit_hash: str | None = None
-        self.last_edited_files: List[str] = []
+        self.hooks = RuntimeHooks()
+        self.extensions: dict[str, Any] = {}
 
         self.markdown_index = MarkdownIndex(self.root_path)
         self.markdown_index.reload()
@@ -184,41 +179,6 @@ class AnvilRuntime:
         )
 
         self.tools.register_tool(
-            name="git_diff",
-            description="Get the current git diff",
-            parameters={"type": "object", "properties": {}, "required": []},
-            implementation=self._tool_git_diff,
-        )
-
-        self.tools.register_tool(
-            name="git_status",
-            description="Get the current git status",
-            parameters={"type": "object", "properties": {}, "required": []},
-            implementation=self._tool_git_status,
-        )
-
-        self.tools.register_tool(
-            name="apply_edit",
-            description="Apply a search and replace edit to a file",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "filepath": {"type": "string", "description": "Path to the file"},
-                    "search": {
-                        "type": "string",
-                        "description": "Text to search for (must match exactly or fuzzy match)",
-                    },
-                    "replace": {
-                        "type": "string",
-                        "description": "Text to replace with",
-                    },
-                },
-                "required": ["filepath", "search", "replace"],
-            },
-            implementation=self._tool_apply_edit,
-        )
-
-        self.tools.register_tool(
             name="skill",
             description="Load a skill's instructions into context",
             parameters={
@@ -259,7 +219,7 @@ class AnvilRuntime:
 
     def _tool_write_file(self, filepath: str, content: str) -> str:
         self.files.write_file(filepath, content)
-        self.last_edited_files.append(filepath)
+        self.hooks.fire_files_changed([filepath], "write_file")
         return f"File {filepath} written successfully"
 
     def _tool_list_files(self, pattern: str = "*") -> str:
@@ -303,26 +263,16 @@ class AnvilRuntime:
         error = result.get("error", result.get("stderr", "Unknown error"))
         return f"Command failed: {error}"
 
-    def _tool_git_diff(self) -> str:
-        diff = self.git.get_diff()
-        return diff if diff else "No changes"
-
-    def _tool_git_status(self) -> str:
-        status = self.git.get_status()
-        return status if status else "Nothing to commit"
-
-    def _tool_apply_edit(self, filepath: str, search: str, replace: str) -> str:
-        success = self.files.apply_edit(filepath, search, replace)
-        if success:
-            self.last_edited_files.append(filepath)
-            return f"Edit applied successfully to {filepath}"
-        return f"Failed to apply edit to {filepath} - search block not found"
-
     def _tool_skill(self, name: str) -> str:
         entry = self.markdown_index.skills.get(name)
         if not entry:
             return f"Skill not found: {name}"
         return entry.body
+
+    def run_turn(self, message: str | None = None) -> None:
+        if message:
+            self.history.add_user_message(message)
+        self._send_to_llm_with_tools()
 
     def _set_system_prompt(self):
         memory_path = self.root_path / "ANVIL.md"
@@ -358,37 +308,9 @@ class AnvilRuntime:
         self.history.add_user_message(message)
         self._send_to_llm_with_tools()
 
-    def _lint_and_fix(self, max_retries: int | None = None):
-        if not self.config.auto_lint or not self.last_edited_files:
-            return
-
-        retries = max_retries or self.config.lint_fix_retries
-        files_to_lint = list(set(self.last_edited_files))
-        self.last_edited_files.clear()
-
-        for attempt in range(retries):
-            errors = []
-            for filepath in files_to_lint:
-                result = self.linter.lint(filepath)
-                if result:
-                    errors.append(f"## {filepath}\n{result.text}")
-
-            if not errors:
-                return
-
-            print(f"🔍 Lint errors found (attempt {attempt + 1}/{retries})")
-            error_msg = "Fix these lint errors:\n\n" + "\n\n".join(errors)
-            self.history.add_user_message(error_msg)
-            self._send_to_llm_with_tools_internal()
-            files_to_lint = list(set(self.last_edited_files))
-            self.last_edited_files.clear()
-
-        if errors:
-            print("⚠️  Could not auto-fix all lint errors")
-
     def _send_to_llm_with_tools(self):
         self._send_to_llm_with_tools_internal()
-        self._lint_and_fix()
+        self.hooks.fire_turn_end()
 
     def _send_to_llm_with_tools_internal(self):
         messages = self.history.get_messages_for_api()
@@ -454,6 +376,7 @@ class AnvilRuntime:
                         self.history.add_tool_result(
                             tool_call_id=tool_call.id, name=tool_name, result=result_str
                         )
+                        self.hooks.fire_tool_result(tool_name, tool_call.id, result)
                         self._autosave()
 
                     messages = self.history.get_messages_for_api()
@@ -461,7 +384,7 @@ class AnvilRuntime:
 
                 if response.content:
                     self.history.add_assistant_message(content=response.content)
-                    self._apply_edits(response.content)
+                    self.hooks.fire_assistant_message(response.content)
                     self._autosave()
 
                 break
@@ -548,57 +471,6 @@ class AnvilRuntime:
                     self.tool_calls.append(ToolCall(tc_data))
 
         return Response(accumulated_content, accumulated_tool_calls)
-
-    def _apply_edits(self, response: str):
-        edits = self.parser.parse_edits(response)
-
-        if not edits:
-            return
-
-        print(f"\n📝 Applying {len(edits)} edit(s)...")
-
-        edited_files = []
-
-        for filename, search, replace in edits:
-            print(f"  Editing {filename}...")
-
-            if self.config.dry_run:
-                print(f"    [DRY RUN] Would edit {filename}")
-                continue
-
-            success = self.files.apply_edit(filename, search, replace)
-
-            if success:
-                print(f"  ✅ {filename} updated")
-                edited_files.append(filename)
-                self.last_edited_files.append(filename)
-            else:
-                print(f"  ❌ Failed to edit {filename}")
-
-        if edited_files and self.config.auto_commit and not self.config.dry_run:
-            try:
-                commit_msg = "anvil: applied edits"
-                hash_str, _ = self.git.commit(commit_msg, edited_files)
-                self.last_commit_hash = hash_str
-                print("✅ Auto-committed changes")
-            except Exception as e:
-                print(f"⚠️  Failed to commit: {e}")
-
-    def undo_last_commit(self) -> None:
-        if not self.last_commit_hash:
-            print("❌ No recent commit to undo")
-            return
-        try:
-            subprocess.run(
-                ["git", "reset", "--soft", "HEAD~1"],
-                cwd=self.root_path,
-                check=True,
-                capture_output=True,
-            )
-            print(f"✅ Reverted commit {self.last_commit_hash[:8]}")
-            self.last_commit_hash = None
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to undo: {e}")
 
     def _autosave(self) -> None:
         if hasattr(self, "session_manager") and self.session_manager:

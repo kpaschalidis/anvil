@@ -11,10 +11,8 @@ class BuiltinCommands:
             "drop": self.cmd_drop,
             "files": self.cmd_files,
             "clear": self.cmd_clear,
-            "undo": self.cmd_undo,
             "model": self.cmd_model,
             "tokens": self.cmd_tokens,
-            "git": self.cmd_git,
             "help": self.cmd_help,
             "commands": self.cmd_commands,
             "skills": self.cmd_skills,
@@ -23,6 +21,15 @@ class BuiltinCommands:
             "load": self.cmd_load,
             "save": self.cmd_save,
         }
+
+    def register(self, name: str, handler) -> None:
+        self._handlers[name] = handler
+
+    def unregister(self, name: str) -> None:
+        self._handlers.pop(name, None)
+
+    def list_commands(self) -> list[str]:
+        return sorted(self._handlers.keys())
 
     def has_command(self, name: str) -> bool:
         return name in self._handlers
@@ -71,10 +78,6 @@ class BuiltinCommands:
         print("✅ Cleared chat history and context")
         return True
 
-    def cmd_undo(self, args: str) -> bool:
-        self.runtime.undo_last_commit()
-        return True
-
     def cmd_model(self, args: str) -> bool:
         if not args:
             print(f"Current model: {self.runtime.config.model}")
@@ -103,15 +106,6 @@ class BuiltinCommands:
             print(
                 f"📊 Messages in history: {msg_count} (install tiktoken for token count)"
             )
-        return True
-
-    def cmd_git(self, args: str) -> bool:
-        if args == "status":
-            print(self.runtime.git.get_status() or "Nothing to commit")
-        elif args == "diff":
-            print(self.runtime.git.get_diff() or "No changes")
-        else:
-            print("Usage: /git status or /git diff")
         return True
 
     def cmd_commands(self, args: str) -> bool:
@@ -180,26 +174,8 @@ class BuiltinCommands:
         return True
 
     def cmd_help(self, args: str) -> bool:
-        print(
-            """
-Commands:
-  /add <file>     Add file to context
-  /drop <file>    Remove file from context
-  /files          List files in context
-  /clear          Clear chat history
-  /undo           Revert last auto-commit
-  /model [name]   Show or switch model
-  /tokens         Show token usage
-  /git status     Show git status
-  /git diff       Show git diff
-  /commands       List markdown commands
-  /skills         List markdown skills
-  /reload         Re-scan .anvil/*
-  /sessions       List saved sessions
-  /load <id>      Load a session by id
-  /save [title]   Save current session
-  /help           Show this help
-  /quit           Exit
-"""
-        )
+        print("\nCommands:")
+        for name in self.list_commands():
+            print(f"  /{name}")
+        print()
         return True

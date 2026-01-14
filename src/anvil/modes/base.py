@@ -19,4 +19,4 @@ class ModeConfig:
     apply_defaults: Callable[[AgentConfig], AgentConfig] | None = None
     register_tools: Callable[[ToolRegistry, AnvilRuntime], None] | None = None
     prompt_block_dirs: list[Path] = field(default_factory=list)
-    extend_builtins: Callable[[BuiltinCommands], None] | None = None
+    extend_builtins: Callable[[BuiltinCommands, AnvilRuntime], None] | None = None
