@@ -31,6 +31,17 @@ def main():
     parser.add_argument(
         "--no-lint", action="store_true", help="Disable auto-linting after edits"
     )
+    parser.add_argument(
+        "--approval-mode",
+        choices=["suggest", "auto-edit", "full-auto"],
+        default="full-auto",
+        help="Approval mode for edits and commands",
+    )
+    parser.add_argument(
+        "--test-command",
+        default="pytest",
+        help="Default test command for /test",
+    )
     parser.add_argument("files", nargs="*", help="Files to add to context")
     parser.add_argument("--message", "-m", help="Initial message")
 
@@ -45,6 +56,8 @@ def main():
         auto_commit=not args.no_auto_commit,
         use_tools=not args.no_tools,
         auto_lint=not args.no_lint,
+        approval_mode=args.approval_mode,
+        test_command=args.test_command,
     )
 
     try:

@@ -28,3 +28,8 @@ class AgentConfig:
     use_tools: bool = True
     auto_lint: bool = True
     lint_fix_retries: int = 2
+    approval_mode: str = "full-auto"
+    summary_max_messages: int = 40
+    summary_keep_last: int = 12
+    summary_model: str | None = None
+    test_command: str = "pytest"
