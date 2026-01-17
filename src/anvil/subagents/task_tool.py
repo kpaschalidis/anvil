@@ -49,6 +49,8 @@ class SubagentRunner:
         agent_name: str | None = None,
         model: str | None = None,
         max_iterations: int = 6,
+        *,
+        allowed_tool_names: set[str] | None = None,
     ) -> str:
         agent_def = None
         if agent_name:
@@ -60,13 +62,16 @@ class SubagentRunner:
 
         messages = history.get_messages_for_api()
         iterations = 0
+        tools = self.tool_registry.get_tool_schemas()
+        if allowed_tool_names is not None:
+            tools = [t for t in tools if t.get("function", {}).get("name") in allowed_tool_names]
 
         while iterations < max_iterations:
             iterations += 1
             response = self.completion_fn(
                 model=model or (agent_def.model if agent_def else None) or self.default_model,
                 messages=messages,
-                tools=self.tool_registry.get_tool_schemas(),
+                tools=tools,
                 tool_choice="auto",
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -93,7 +98,13 @@ class SubagentRunner:
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
-                    result = self.tool_registry.execute_tool(tool_name, tool_args)
+                    if allowed_tool_names is not None and tool_name not in allowed_tool_names:
+                        result = {
+                            "success": False,
+                            "error": f"Tool not allowed in worker mode: {tool_name}",
+                        }
+                    else:
+                        result = self.tool_registry.execute_tool(tool_name, tool_args)
                     history.add_tool_result(
                         tool_call_id=tool_call.id,
                         name=tool_name,

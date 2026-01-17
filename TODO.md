@@ -25,9 +25,14 @@
 - Unified entrypoint remains `anvil` (keep `scout` as shim temporarily).
 
 ## Implementation checklist
+- [ ] Phase 1–3 (v2): workers + agent facade + CLI subcommands
 - [ ] Introduce `common.events` + minimal event types used by services.
 - [ ] Add `scout.services.fetch.FetchService` (fetch-only loop using `scout.sources.*` + `scout.storage.Storage.save_document`).
 - [ ] Add `anvil fetch ...` command that calls `FetchService`.
+- [x] Add tool gating for workers (`allowed_tool_names`) in `SubagentRunner.run_task()`.
+- [ ] Add `anvil/subagents/parallel.py` with `spawn_parallel()` (restricted tools by default).
+- [ ] Add `anvil/agent/agent.py` facade over `AnvilRuntime` (workflow tools stubbed initially).
+- [ ] Refactor `anvil/cli.py` to use argparse subcommands (`fetch`, `code`, legacy mode fallback).
 - [ ] Deprecate `scout` CLI: keep `scout dump` working by delegating to `FetchService`, and print a deprecation notice for other commands.
 - [ ] Remove Scout extraction surface: `scout run/export/watch/stats/tag/clone/archive` (or re-scope them to raw-doc sessions only).
 - [ ] Delete extraction-only modules once unused: `src/scout/{agent,extract,filters,validation,complexity,pipeline,parallel,circuit_breaker,progress}.py` and `src/scout/prompts/`.
