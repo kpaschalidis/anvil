@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from anvil.subagents.task_tool import SubagentRunner
 
@@ -22,6 +22,7 @@ class WorkerResult:
     task_id: str
     output: str = ""
     citations: tuple[str, ...] = ()
+    sources: dict[str, dict[str, str]] = field(default_factory=dict)
     web_search_calls: int = 0
     success: bool = True
     error: str | None = None
@@ -66,6 +67,7 @@ class ParallelWorkerRunner:
                             task_id=task.id,
                             output=output or "",
                             citations=tuple(sorted(trace.citations)),
+                            sources=dict(getattr(trace, "sources", {}) or {}),
                             web_search_calls=int(trace.web_search_calls or 0),
                             success=True,
                         )

@@ -133,6 +133,7 @@ class SubagentRunner:
                     if tool_name == "web_search":
                         trace.web_search_calls += 1
                         trace.citations.update(_extract_citations_from_web_search_result(result))
+                        trace.sources.update(_extract_source_metadata_from_web_search_result(result))
 
                     history.add_tool_result(
                         tool_call_id=tool_call.id,
@@ -184,3 +185,34 @@ def _extract_citations_from_web_search_result(result: dict[str, Any]) -> set[str
             citations.add(url)
 
     return citations
+
+
+def _extract_source_metadata_from_web_search_result(result: dict[str, Any]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    if not isinstance(result, dict):
+        return out
+    if result.get("success") is not True:
+        return out
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return out
+    items = payload.get("results")
+    if not isinstance(items, list):
+        return out
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not (isinstance(url, str) and url.startswith("http")):
+            continue
+        title = item.get("title")
+        snippet = item.get("content") or item.get("snippet") or item.get("description")
+        meta: dict[str, str] = {}
+        if isinstance(title, str) and title.strip():
+            meta["title"] = title.strip()
+        if isinstance(snippet, str) and snippet.strip():
+            meta["snippet"] = snippet.strip()
+        if meta:
+            out[url] = meta
+    return out

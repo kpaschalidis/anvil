@@ -111,9 +111,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sessions_open = sessions_sub.add_parser("open", help="Open research report")
     sessions_open.add_argument("session_id")
+    sessions_open.add_argument(
+        "--artifact",
+        default=None,
+        choices=["report", "raw", "db", "state", "meta"],
+        help="Which artifact to open (defaults to report if present, else raw.jsonl)",
+    )
 
     sessions_dir = sessions_sub.add_parser("dir", help="Print session directory")
     sessions_dir.add_argument("session_id")
+
+    sessions_paths = sessions_sub.add_parser("paths", help="Print common artifact paths for a session")
+    sessions_paths.add_argument("session_id")
 
     gui = subparsers.add_parser("gui", help="Launch Gradio web interface")
     gui.add_argument("--port", type=int, default=7860)
@@ -220,7 +229,6 @@ def _cmd_code(args) -> int:
 
 
 def _cmd_fetch(args) -> int:
-    from anvil.sessions.meta import load_meta, write_meta
     from common.events import DocumentEvent, ErrorEvent, ProgressEvent
     from scout.config import ScoutConfig, ConfigError
     from scout.services.fetch import FetchConfig, FetchService
@@ -284,29 +292,6 @@ def _cmd_fetch(args) -> int:
         elif isinstance(event, DocumentEvent):
             pass
 
-    start_meta = load_meta(data_dir=data_dir, session_id=session_id) if session_id else None
-    meta = dict(start_meta or {})
-    meta.update(
-        {
-            "kind": "fetch",
-            "session_id": session_id,
-            "topic": topic,
-            "status": "running",
-            "updated_at": _utc_ts(),
-            "created_at": meta.get("created_at") or _utc_ts(),
-            "config": {
-                "sources": source_names,
-                "max_documents": int(args.max_documents),
-                "max_task_pages": int(args.max_task_pages),
-                "deep_comments": args.deep_comments,
-                "profile": args.profile,
-                "resume": bool(resume_id),
-            },
-        }
-    )
-    if session_id:
-        write_meta(data_dir=data_dir, session_id=session_id, meta=meta)
-
     service = FetchService(
         FetchConfig(
             topic=topic,
@@ -317,17 +302,11 @@ def _cmd_fetch(args) -> int:
             deep_comments=args.deep_comments,
             session_id=session_id,
             resume=bool(resume_id),
+            write_meta=True,
         ),
         on_event=on_event,
     )
     result = service.run(scout_config=scout_config)
-
-    if result.session_id:
-        meta["session_id"] = result.session_id
-        meta["status"] = "completed" if not result.errors else "completed_with_errors"
-        meta["updated_at"] = _utc_ts()
-        meta["documents_fetched"] = int(result.documents_fetched)
-        write_meta(data_dir=data_dir, session_id=result.session_id, meta=meta)
 
     print(f"Session: {result.session_id}")
     print(f"Documents: {result.documents_fetched}")
@@ -518,6 +497,17 @@ def _cmd_sessions(args) -> int:
         print(Path(data_dir) / args.session_id)
         return 0
 
+    if sub == "paths":
+        base = Path(data_dir) / args.session_id
+        print(base / "meta.json")
+        print(base / "state.json")
+        print(base / "raw.jsonl")
+        print(base / "session.db")
+        print(base / "research" / "report.md")
+        print(base / "research" / "plan.json")
+        print(base / "research" / "workers")
+        return 0
+
     meta = load_meta(data_dir=data_dir, session_id=args.session_id) or {}
     if sub == "show":
         import json
@@ -526,17 +516,31 @@ def _cmd_sessions(args) -> int:
         return 0
 
     if sub == "open":
-        report = Path(data_dir) / args.session_id / "research" / "report.md"
-        if not report.exists():
-            print(f"Report not found: {report}", file=sys.stderr)
+        base = Path(data_dir) / args.session_id
+        artifact = getattr(args, "artifact", None)
+        if artifact == "meta":
+            target = base / "meta.json"
+        elif artifact == "state":
+            target = base / "state.json"
+        elif artifact == "raw":
+            target = base / "raw.jsonl"
+        elif artifact == "db":
+            target = base / "session.db"
+        else:
+            report = base / "research" / "report.md"
+            raw = base / "raw.jsonl"
+            target = report if report.exists() else raw
+
+        if not target.exists():
+            print(f"Artifact not found: {target}", file=sys.stderr)
             return 1
         opener = None
         if sys.platform == "darwin":
-            opener = ["open", str(report)]
+            opener = ["open", str(target)]
         elif sys.platform.startswith("win"):
-            opener = ["cmd", "/c", "start", str(report)]
+            opener = ["cmd", "/c", "start", str(target)]
         else:
-            opener = ["xdg-open", str(report)]
+            opener = ["xdg-open", str(target)]
         subprocess.run(opener, check=False)
         return 0
 

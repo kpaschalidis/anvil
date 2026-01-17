@@ -21,6 +21,7 @@ class FetchConfig:
     session_id: str | None = None
     resume: bool = False
     max_task_pages: int = 25
+    write_meta: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,20 @@ class FetchService:
         if not topic:
             topic = session.topic
 
+        if self.config.write_meta:
+            self._write_meta(
+                session_id=session_id,
+                topic=topic,
+                status="running",
+                config={
+                    "sources": source_names,
+                    "max_documents": int(self.config.max_documents),
+                    "max_task_pages": int(self.config.max_task_pages),
+                    "deep_comments": self.config.deep_comments,
+                    "resume": bool(self.config.resume),
+                },
+            )
+
         if sources is None:
             if scout_config is None:
                 scout_config = ScoutConfig.from_profile("quick", sources=source_names)
@@ -107,6 +122,7 @@ class FetchService:
                 raise ValueError("no sources configured")
 
         storage = Storage(session_id, self.config.data_dir)
+        succeeded = False
         try:
             seen_doc_ids: set[str] = set(session.visited_docs)
             docs_fetched_ref: list[int] = [int(session.stats.docs_collected or 0)]
@@ -162,14 +178,53 @@ class FetchService:
             session.stats.docs_collected = docs_fetched_ref[0]
             self._save_session(session)
 
+            succeeded = True
             return FetchResult(
                 session_id=session_id,
                 documents_fetched=docs_fetched_ref[0],
                 duration_seconds=duration,
                 errors=errors,
             )
+        except Exception as e:
+            if self.config.write_meta:
+                self._write_meta(
+                    session_id=session_id,
+                    topic=topic,
+                    status="failed",
+                    config={
+                        "sources": source_names,
+                        "max_documents": int(self.config.max_documents),
+                        "max_task_pages": int(self.config.max_task_pages),
+                        "deep_comments": self.config.deep_comments,
+                        "resume": bool(self.config.resume),
+                    },
+                    summary={
+                        "documents_fetched": int(session.stats.docs_collected or 0),
+                        "errors": len(errors),
+                        "error": str(e),
+                    },
+                )
+            raise
         finally:
             storage.close()
+            if self.config.write_meta and succeeded:
+                status = "completed" if not errors else "completed_with_errors"
+                self._write_meta(
+                    session_id=session_id,
+                    topic=topic,
+                    status=status,
+                    config={
+                        "sources": source_names,
+                        "max_documents": int(self.config.max_documents),
+                        "max_task_pages": int(self.config.max_task_pages),
+                        "deep_comments": self.config.deep_comments,
+                        "resume": bool(self.config.resume),
+                    },
+                    summary={
+                        "documents_fetched": int(session.stats.docs_collected or 0),
+                        "errors": len(errors),
+                    },
+                )
 
     def _run_task_page(
         self,
@@ -276,3 +331,41 @@ class FetchService:
 
     def _save_session(self, session: SessionState) -> None:
         SessionManager(self.config.data_dir).save_session(session)
+
+    def _write_meta(
+        self,
+        *,
+        session_id: str,
+        topic: str,
+        status: str,
+        config: dict,
+        summary: dict | None = None,
+    ) -> None:
+        import json
+        from pathlib import Path
+
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        path = Path(self.config.data_dir) / session_id / "meta.json"
+        created_at = now
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and isinstance(existing.get("created_at"), str):
+                    created_at = existing["created_at"]
+            except Exception:
+                pass
+
+        payload = {
+            "kind": "fetch",
+            "session_id": session_id,
+            "topic": topic,
+            "status": status,
+            "created_at": created_at,
+            "updated_at": now,
+            "config": config,
+        }
+        if summary:
+            payload.update(summary)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

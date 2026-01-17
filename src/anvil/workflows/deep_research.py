@@ -91,6 +91,7 @@ Return ONLY valid JSON in this exact shape:
 
 Rules:
 - Every item in `findings[].citations` MUST be a URL present in the worker findings citations.
+- Base claims only on information supported by the cited sources (use source titles/snippets in the worker findings).
 - If you cannot support a claim with citations, omit it.
 - Be explicit about uncertainty.
 """
@@ -165,6 +166,7 @@ class DeepResearchWorkflow:
                     "output": r.output,
                     "error": r.error,
                     "citations": list(r.citations),
+                    "sources": getattr(r, "sources", {}) or {},
                     "web_search_calls": int(r.web_search_calls or 0),
                 }
             )
@@ -217,7 +219,7 @@ class DeepResearchWorkflow:
             validated = self._validate_plan(plan)
         except PlanningError as e:
             if not self.config.best_effort:
-                raise
+                raise PlanningError(str(e), raw=content) from None
             msg = str(e)
             if self.emitter is not None:
                 self.emitter.emit(
@@ -354,7 +356,45 @@ class DeepResearchWorkflow:
         open_qs = (payload or {}).get("open_questions") or []
 
         allowed = set(citations)
+        source_meta: dict[str, dict[str, str]] = {}
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            m = f.get("sources")
+            if isinstance(m, dict):
+                for url, meta in m.items():
+                    if isinstance(url, str) and url.startswith("http") and isinstance(meta, dict):
+                        merged: dict[str, str] = {}
+                        title = meta.get("title")
+                        snippet = meta.get("snippet")
+                        if isinstance(title, str) and title.strip():
+                            merged["title"] = title.strip()
+                        if isinstance(snippet, str) and snippet.strip():
+                            merged["snippet"] = snippet.strip()
+                        if merged:
+                            source_meta.setdefault(url, {}).update(merged)
+
         rendered_findings: list[str] = []
+        citation_numbers: dict[str, int] = {}
+        ordered_urls: list[str] = []
+
+        def _num(url: str) -> int:
+            if url not in citation_numbers:
+                citation_numbers[url] = len(citation_numbers) + 1
+                ordered_urls.append(url)
+            return citation_numbers[url]
+
+        def _why(url: str) -> str:
+            meta = source_meta.get(url) or {}
+            snippet = (meta.get("snippet") or "").strip()
+            title = (meta.get("title") or "").strip()
+            if snippet:
+                s = " ".join(snippet.split())
+                return s[:220] + ("…" if len(s) > 220 else "")
+            if title:
+                return title
+            return url.split("/")[2] if url.startswith("http") else url
+
         if isinstance(findings_out, list):
             for it in findings_out:
                 if not isinstance(it, dict):
@@ -370,9 +410,11 @@ class DeepResearchWorkflow:
                     if self.config.best_effort:
                         continue
                     raise RuntimeError(f"Synthesis produced an uncited claim: {claim}")
-                rendered_findings.append(
-                    f"- {claim} " + " ".join(f"[source]({u})" for u in cites[:3])
-                )
+                nums = [_num(u) for u in cites]
+                links = "".join(f"[{n}]" for n in nums[:3])
+                primary = cites[0]
+                rendered_findings.append(f"- {claim} {links}")
+                rendered_findings.append(f"  - Why: {_why(primary)}")
 
         if self.config.require_citations and not self.config.best_effort and not rendered_findings:
             raise RuntimeError("Synthesis produced no cited findings")
@@ -405,9 +447,14 @@ class DeepResearchWorkflow:
                     lines.append(f"- {q.strip()}")
             lines.append("")
 
-        if citations:
+        if ordered_urls:
             lines.append("## Sources")
-            lines.extend(f"- {u}" for u in citations)
+            for u in ordered_urls:
+                n = citation_numbers[u]
+                meta = source_meta.get(u) or {}
+                title = (meta.get("title") or "").strip()
+                label = f"{title} — {u}" if title else u
+                lines.append(f"- [{n}]({u}) {label}")
             lines.append("")
 
         return "\n".join(lines).strip()

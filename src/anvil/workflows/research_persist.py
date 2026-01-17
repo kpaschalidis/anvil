@@ -40,6 +40,7 @@ def persist_research_outcome(
                     "error": r.error,
                     "web_search_calls": r.web_search_calls,
                     "citations": list(r.citations),
+                    "sources": getattr(r, "sources", {}) or {},
                     "output": r.output,
                 },
             )

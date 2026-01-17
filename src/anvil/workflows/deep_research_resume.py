@@ -21,10 +21,14 @@ def _load_existing_worker_results(workers_dir: Path) -> dict[str, WorkerResult]:
         except Exception:
             continue
         task_id = str(payload.get("task_id") or p.stem)
+        sources = payload.get("sources")
+        if not isinstance(sources, dict):
+            sources = {}
         results[task_id] = WorkerResult(
             task_id=task_id,
             output=str(payload.get("output") or ""),
             citations=tuple(payload.get("citations") or ()),
+            sources={k: v for k, v in sources.items() if isinstance(k, str) and isinstance(v, dict)},
             web_search_calls=int(payload.get("web_search_calls") or 0),
             success=bool(payload.get("success") is True),
             error=(str(payload.get("error")) if payload.get("error") else None),

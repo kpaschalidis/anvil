@@ -15,7 +15,9 @@
 - [x] Deep research artifacts: persist `planner_raw.txt` + `planner_error.json` under session
 - [x] Fix deep research empty-task fallback bug (`_to_worker_tasks` should never reference undefined `query`)
 - [x] Tests: strict planning failure + best-effort fallback coverage
-- [ ] Improve citation UX: per-claim numbered citations + short “why this source” snippet
-- [ ] Sessions UX: list both fetch+research by default; add shortcuts to open fetch artifacts
-- [ ] Align fetch sessions meta: optionally emit `meta.json` directly from FetchService (not only CLI)
-- [ ] Docs: update `examples/` that still reference `scout` CLI (if any)
+- [ ] Improve citation UX: per-claim numbered citations + grounded “why this source” snippet
+- [x] Improve citation UX: per-claim numbered citations + grounded “why this source” snippet
+- [x] Sessions UX: sessions list both kinds by default + shortcuts to open fetch artifacts
+- [x] Fetch meta: allow FetchService to write/update `meta.json` (CLI not required)
+- [x] Docs sweep: no references to removed `scout` CLI
+- [x] Planning artifacts: include raw output on validation errors too

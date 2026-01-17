@@ -16,4 +16,4 @@ class SubagentTrace:
     tool_calls: list[ToolCallRecord] = field(default_factory=list)
     web_search_calls: int = 0
     citations: set[str] = field(default_factory=set)
-
+    sources: dict[str, dict[str, str]] = field(default_factory=dict)
