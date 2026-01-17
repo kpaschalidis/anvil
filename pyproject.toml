@@ -21,6 +21,9 @@ scout = [
     "praw>=7.0",
     "playwright>=1.41",
 ]
+gui = [
+    "gradio>=4.0",
+]
 
 [project.scripts]
 anvil = "anvil.cli:main"

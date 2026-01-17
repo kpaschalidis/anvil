@@ -13,7 +13,7 @@ from anvil.runtime.runtime import AnvilRuntime
 def main():
     load_dotenv()
     argv = sys.argv[1:]
-    if argv and argv[0] in {"fetch", "code", "need-finding", "research", "coding"}:
+    if argv and argv[0] in {"fetch", "code", "need-finding", "research", "coding", "gui"}:
         raise SystemExit(_main_subcommands(argv))
     raise SystemExit(_main_legacy(argv))
 
@@ -149,6 +149,10 @@ def _main_subcommands(argv: list[str]) -> int:
     coding_parser = subparsers.add_parser("coding", help="(Legacy) Interactive coding mode")
     coding_parser.add_argument("files", nargs="*")
 
+    gui_parser = subparsers.add_parser("gui", help="Launch Gradio web interface")
+    gui_parser.add_argument("--port", type=int, default=7860)
+    gui_parser.add_argument("--share", action="store_true", help="Create public link")
+
     args = parser.parse_args(argv)
 
     if args.command == "fetch":
@@ -187,7 +191,22 @@ def _main_subcommands(argv: list[str]) -> int:
     if args.command == "coding":
         return _main_legacy(["coding", *list(args.files)])
 
+    if args.command == "gui":
+        return _main_gui(args)
+
     return 1
+
+
+def _main_gui(args) -> int:
+    try:
+        from anvil.gui import launch
+    except ImportError:
+        print("Gradio not installed. Run: uv pip install 'anvil[gui]'")
+        return 1
+
+    print(f"Launching Anvil GUI on port {args.port}...")
+    launch(server_port=args.port, share=args.share)
+    return 0
 
 
 def _git_root_or_exit() -> str:

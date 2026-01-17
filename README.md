@@ -31,7 +31,19 @@ GEMINI_API_KEY=...                 # for Gemini models
 
 > **Note:** `uv sync` creates a virtual environment in `.venv/`. All `uv run` commands execute inside this venv automatically.
 
-## Usage
+## GUI
+```bash
+# Install gradio
+uv pip install 'anvil[gui]'
+
+# Launch
+anvil gui                    # Default port 7860
+anvil gui --port 8080        # Custom port
+anvil gui --share            # Public link (Gradio hosting)
+```
+
+
+## CLI
 
 ```bash
 # Run with default model (gpt-4o)
