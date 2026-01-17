@@ -3,6 +3,8 @@ from __future__ import annotations
 from anvil.config import AgentConfig
 from anvil.runtime.repl import AnvilREPL
 from anvil.runtime.runtime import AnvilRuntime
+from anvil.subagents.parallel import ParallelWorkerRunner
+from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow
 
 
 class AnvilAgent:
@@ -38,7 +40,13 @@ class AnvilAgent:
         return f"need_finding for '{topic}' not implemented yet. Use `anvil fetch` for now."
 
     def _tool_deep_research(self, query: str) -> str:
-        return f"deep_research for '{query}' not implemented yet."
+        workflow = DeepResearchWorkflow(
+            subagent_runner=self.runtime.subagent_runner,
+            parallel_runner=ParallelWorkerRunner(self.runtime.subagent_runner),
+            config=DeepResearchConfig(model=self.runtime.config.model),
+            emitter=None,
+        )
+        return workflow.run(query)
 
     def run_interactive(self, *, initial_message: str | None = None) -> None:
         repl = AnvilREPL(self.runtime)
@@ -46,4 +54,3 @@ class AnvilAgent:
 
     def execute(self, prompt: str, *, files: list[str] | None = None) -> str:
         return self.runtime.run_prompt(prompt, files=files)
-

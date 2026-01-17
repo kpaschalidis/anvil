@@ -24,6 +24,9 @@ scout = [
 gui = [
     "gradio>=4.0",
 ]
+search = [
+    "tavily-python>=0.3.5",
+]
 
 [project.scripts]
 anvil = "anvil.cli:main"

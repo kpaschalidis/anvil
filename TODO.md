@@ -39,3 +39,13 @@
 - [ ] Simplify `src/scout/config.py` and `src/scout/models.py` to raw-doc-only.
 - [ ] Update docs: `README.md`, `SCOUT_QUICKSTART.md`, `CLI_EXAMPLES.md`.
 - [ ] Update tests: remove/replace extraction-related tests; add tests for `FetchService`.
+
+## Phase 4–6 (v2): Deep Research (Tavily) first
+- [ ] Add optional dependency group `search` with `tavily-python`.
+- [ ] Add tool `web_search` (Tavily) and register in runtime.
+- [ ] Allow `web_search` in worker-safe tools by default.
+- [ ] Implement `anvil/workflows/deep_research.py` (orchestrator-workers).
+- [ ] Wire `anvil research "query"` CLI command to DeepResearchWorkflow.
+- [ ] Wire `AnvilAgent` tool `deep_research` to DeepResearchWorkflow.
+- [ ] Add tests for `web_search` and `DeepResearchWorkflow` (no network).
+- [ ] Update docs for `uv sync --extra search` and new commands.

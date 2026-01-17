@@ -28,6 +28,7 @@ from anvil.subagents.registry import AgentRegistry
 from anvil.subagents.task_tool import SubagentRunner, TaskTool
 from anvil.modes.base import ModeConfig
 from anvil.runtime.hooks import RuntimeHooks
+from anvil.tools.search import WEB_SEARCH_TOOL_SCHEMA, web_search
 
 
 class AnvilRuntime:
@@ -188,6 +189,13 @@ class AnvilRuntime:
         )
 
         self.tools.register_tool(
+            name="web_search",
+            description="Search the web (Tavily)",
+            parameters=WEB_SEARCH_TOOL_SCHEMA,
+            implementation=self._tool_web_search,
+        )
+
+        self.tools.register_tool(
             name="skill",
             description="Load a skill's instructions into context",
             parameters={
@@ -277,6 +285,28 @@ class AnvilRuntime:
         if not entry:
             return f"Skill not found: {name}"
         return entry.body
+
+    def _tool_web_search(
+        self,
+        query: str,
+        page: int = 1,
+        page_size: int = 5,
+        max_results: int | None = None,
+        include_domains: list[str] | None = None,
+        exclude_domains: list[str] | None = None,
+        days: int | None = None,
+        include_raw_content: bool = False,
+    ) -> dict[str, Any]:
+        return web_search(
+            query=query,
+            page=page,
+            page_size=page_size,
+            max_results=max_results,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
+            days=days,
+            include_raw_content=include_raw_content,
+        )
 
     def run_turn(self, message: str | None = None) -> None:
         if message:

@@ -29,6 +29,15 @@ ANTHROPIC_API_KEY=sk-ant-...       # for Claude models
 GEMINI_API_KEY=...                 # for Gemini models
 ```
 
+### Optional: Web Search (Deep Research)
+
+Deep research uses Tavily web search.
+
+```bash
+uv sync --extra search
+export TAVILY_API_KEY="tvly-..."
+```
+
 > **Note:** `uv sync` creates a virtual environment in `.venv/`. All `uv run` commands execute inside this venv automatically.
 
 ## GUI
@@ -64,6 +73,11 @@ uv run anvil src/anvil/agent.py
 
 # With initial message
 uv run anvil -m "Add error handling to the main function"
+
+# Web research (orchestrator-workers; requires Tavily)
+uv sync --extra search
+export TAVILY_API_KEY="tvly-..."
+uv run anvil research "competitive analysis of AI coding agents"
 
 # Options
 uv run anvil --help

@@ -6,6 +6,7 @@ from typing import Any, Dict
 from common.text_template import render_template
 from anvil.history import MessageHistory
 from anvil.subagents.registry import AgentRegistry, AgentDefinition
+from anvil.subagents.trace import SubagentTrace, ToolCallRecord
 
 
 class SubagentRunner:
@@ -52,9 +53,29 @@ class SubagentRunner:
         *,
         allowed_tool_names: set[str] | None = None,
     ) -> str:
+        output, _trace = self.run_task_with_trace(
+            prompt=prompt,
+            agent_name=agent_name,
+            model=model,
+            max_iterations=max_iterations,
+            allowed_tool_names=allowed_tool_names,
+        )
+        return output
+
+    def run_task_with_trace(
+        self,
+        *,
+        prompt: str,
+        agent_name: str | None = None,
+        model: str | None = None,
+        max_iterations: int = 6,
+        allowed_tool_names: set[str] | None = None,
+    ) -> tuple[str, SubagentTrace]:
         agent_def = None
         if agent_name:
             agent_def = self.agent_registry.agents.get(agent_name)
+
+        trace = SubagentTrace()
 
         history = MessageHistory()
         history.set_system_prompt(self._build_system_prompt(agent_def))
@@ -105,6 +126,14 @@ class SubagentRunner:
                         }
                     else:
                         result = self.tool_registry.execute_tool(tool_name, tool_args)
+
+                    trace.tool_calls.append(
+                        ToolCallRecord(tool_name=tool_name, args=tool_args, result=result)
+                    )
+                    if tool_name == "web_search":
+                        trace.web_search_calls += 1
+                        trace.citations.update(_extract_citations_from_web_search_result(result))
+
                     history.add_tool_result(
                         tool_call_id=tool_call.id,
                         name=tool_name,
@@ -116,11 +145,11 @@ class SubagentRunner:
 
             if response_msg.content:
                 history.add_assistant_message(content=response_msg.content)
-                return response_msg.content
+                return response_msg.content, trace
 
-            return ""
+            return "", trace
 
-        return "Subagent exceeded max iterations without a final response."
+        return "Subagent exceeded max iterations without a final response.", trace
 
 
 class TaskTool:
@@ -129,3 +158,29 @@ class TaskTool:
 
     def __call__(self, prompt: str, agent: str | None = None, subagent_type: str | None = None):
         return self.runner.run_task(prompt, agent_name=agent or subagent_type)
+
+
+def _extract_citations_from_web_search_result(result: dict[str, Any]) -> set[str]:
+    citations: set[str] = set()
+    if not isinstance(result, dict):
+        return citations
+
+    if result.get("success") is not True:
+        return citations
+
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return citations
+
+    items = payload.get("results")
+    if not isinstance(items, list):
+        return citations
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if isinstance(url, str) and url.startswith("http"):
+            citations.add(url)
+
+    return citations

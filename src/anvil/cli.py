@@ -145,6 +145,10 @@ def _main_subcommands(argv: list[str]) -> int:
 
     research_parser = subparsers.add_parser("research", help="(Stub) Research workflow")
     research_parser.add_argument("query")
+    research_parser.add_argument("--model", default="gpt-4o")
+    research_parser.add_argument("--max-workers", type=int, default=5)
+    research_parser.add_argument("--worker-iterations", type=int, default=6)
+    research_parser.add_argument("--worker-timeout", type=float, default=120.0)
 
     coding_parser = subparsers.add_parser("coding", help="(Legacy) Interactive coding mode")
     coding_parser.add_argument("files", nargs="*")
@@ -185,8 +189,62 @@ def _main_subcommands(argv: list[str]) -> int:
         return _main_code(code_argv)
 
     if args.command in {"need-finding", "research"}:
-        print("Not implemented yet. Use `anvil fetch` and `anvil code` for now.")
-        return 0
+        if args.command == "need-finding":
+            print("Not implemented yet. Use `anvil fetch` for now.")
+            return 0
+
+        import os
+
+        missing_key = not bool(os.environ.get("TAVILY_API_KEY"))
+        try:
+            import tavily  # type: ignore[import-not-found]  # noqa: F401
+
+            missing_pkg = False
+        except Exception:
+            missing_pkg = True
+
+        if missing_key or missing_pkg:
+            if missing_pkg:
+                print("Error: `tavily-python` is not installed. Run: `uv sync --extra search`.")
+            if missing_key:
+                print("Error: `TAVILY_API_KEY` is not set (add it to `.env` or export it).")
+            return 2
+
+        from common.events import EventEmitter, ProgressEvent
+        from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow
+        from anvil.subagents.parallel import ParallelWorkerRunner
+
+        root_path = _git_root_or_exit()
+        runtime = AnvilRuntime(
+            root_path,
+            AgentConfig(model=resolve_model_alias(args.model), stream=False, use_tools=True),
+            mode=get_mode("coding"),
+        )
+
+        def on_event(event) -> None:
+            if isinstance(event, ProgressEvent):
+                msg = event.message or event.stage
+                print(f"[{event.stage}] {msg}")
+
+        workflow = DeepResearchWorkflow(
+            subagent_runner=runtime.subagent_runner,
+            parallel_runner=ParallelWorkerRunner(runtime.subagent_runner),
+            config=DeepResearchConfig(
+                model=resolve_model_alias(args.model),
+                max_workers=args.max_workers,
+                worker_max_iterations=args.worker_iterations,
+                worker_timeout_s=args.worker_timeout,
+            ),
+            emitter=EventEmitter(on_event),
+        )
+        try:
+            report = workflow.run(args.query)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        else:
+            print(report)
+            return 0
 
     if args.command == "coding":
         return _main_legacy(["coding", *list(args.files)])

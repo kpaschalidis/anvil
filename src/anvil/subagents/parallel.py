@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from anvil.subagents.task_tool import SubagentRunner
 
 
-WORKER_SAFE_TOOLS: set[str] = {"read_file", "grep", "list_files"}
+WORKER_SAFE_TOOLS: set[str] = {"read_file", "grep", "list_files", "web_search"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,8 @@ class WorkerTask:
 class WorkerResult:
     task_id: str
     output: str = ""
+    citations: tuple[str, ...] = ()
+    web_search_calls: int = 0
     success: bool = True
     error: str | None = None
 
@@ -46,7 +48,7 @@ class ParallelWorkerRunner:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
-                    self.runner.run_task,
+                    self.runner.run_task_with_trace,
                     prompt=task.prompt,
                     agent_name=task.agent_name,
                     max_iterations=task.max_iterations,
@@ -58,9 +60,15 @@ class ParallelWorkerRunner:
             for future in as_completed(futures, timeout=timeout):
                 task = futures[future]
                 try:
-                    output = future.result()
+                    output, trace = future.result()
                     results.append(
-                        WorkerResult(task_id=task.id, output=output or "", success=True)
+                        WorkerResult(
+                            task_id=task.id,
+                            output=output or "",
+                            citations=tuple(sorted(trace.citations)),
+                            web_search_calls=int(trace.web_search_calls or 0),
+                            success=True,
+                        )
                     )
                 except Exception as e:
                     results.append(
@@ -68,4 +76,3 @@ class ParallelWorkerRunner:
                     )
 
         return results
-

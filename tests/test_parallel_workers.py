@@ -93,11 +93,19 @@ def test_parallel_worker_runner_passes_restricted_tools_by_default():
         def __init__(self):
             self.allowed: list[object] = []
 
-        def run_task(self, *, prompt, agent_name=None, max_iterations=6, allowed_tool_names=None, model=None):
+        def run_task_with_trace(
+            self,
+            *,
+            prompt,
+            agent_name=None,
+            max_iterations=6,
+            allowed_tool_names=None,
+            model=None,
+        ):
             self.allowed.append(allowed_tool_names)
             if prompt == "boom":
                 raise RuntimeError("fail")
-            return f"ok:{prompt}"
+            return f"ok:{prompt}", type("T", (), {"citations": set(), "web_search_calls": 0})()
 
     runner = FakeRunner()
     pw = ParallelWorkerRunner(runner)  # type: ignore[arg-type]
@@ -122,4 +130,3 @@ def test_parallel_worker_runner_passes_restricted_tools_by_default():
     results2 = pw.spawn_parallel([WorkerTask(id="c", prompt="two")], allow_writes=True)
     assert results2[0].success
     assert runner.allowed[-1] is None
-
