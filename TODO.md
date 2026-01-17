@@ -21,3 +21,7 @@
 - [x] Fetch meta: allow FetchService to write/update `meta.json` (CLI not required)
 - [x] Docs sweep: no references to removed `scout` CLI
 - [x] Planning artifacts: include raw output on validation errors too
+- [x] Research profiles: `quick` default, `deep` for 15–20m
+- [x] Deep profile: pagination + min web_search calls enforced
+- [x] Deep profile: round-2 gap-fill (orchestrator→workers→synthesis)
+- [x] Replace per-worker min calls with coverage floors (domains/citations)

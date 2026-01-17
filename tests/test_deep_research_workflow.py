@@ -134,7 +134,13 @@ def test_deep_research_workflow_planning_code_fence_json_parses(monkeypatch):
     wf = DeepResearchWorkflow(
         subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
         parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
-        config=DeepResearchConfig(model="gpt-4o", max_workers=2, worker_max_iterations=2, worker_timeout_s=10.0),
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            min_total_domains=0,
+        ),
         emitter=None,
     )
     outcome = wf.run("query")
@@ -213,3 +219,241 @@ def test_deep_research_workflow_planning_validation_error_preserves_raw(monkeypa
     with pytest.raises(PlanningError) as e:
         wf.run("query")
     assert e.value.raw
+
+
+def test_deep_research_workflow_target_web_search_calls_is_not_enforced(monkeypatch):
+    from common import llm as common_llm
+
+    def fake_completion(**kwargs):
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        if "research orchestrator" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "a", "search_query": "q1", "instructions": "i1"},
+                            {"id": "b", "search_query": "q2", "instructions": "i2"},
+                            {"id": "c", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+        return Resp(
+            json.dumps(
+                {
+                    "title": "REPORT",
+                    "summary_bullets": ["a"],
+                    "findings": [{"claim": "c", "citations": ["https://example.com/a"]}],
+                    "open_questions": [],
+                }
+            )
+        )
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    class OneCallParallelRunner:
+        def spawn_parallel(self, tasks, **kwargs):
+            return [
+                WorkerResult(
+                    task_id=t.id,
+                    output="x",
+                    citations=(f"https://example.com/{t.id}",),
+                    web_search_calls=1,
+                    success=True,
+                )
+                for t in tasks
+            ]
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=OneCallParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            target_web_search_calls=2,
+            min_total_citations=1,
+            min_total_domains=0,
+        ),
+        emitter=None,
+    )
+
+    outcome = wf.run("query")
+    assert outcome.report_markdown
+
+
+def test_deep_research_workflow_deep_profile_round2(monkeypatch):
+    from common import llm as common_llm
+
+    def fake_completion(**kwargs):
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        if "follow-up web searches" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "extra", "search_query": "q4", "instructions": "i4"},
+                        ]
+                    }
+                )
+            )
+        if "research orchestrator" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "a", "search_query": "q1", "instructions": "i1"},
+                            {"id": "b", "search_query": "q2", "instructions": "i2"},
+                            {"id": "c", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+        return Resp(
+            json.dumps(
+                {
+                    "title": "REPORT",
+                    "summary_bullets": ["a"],
+                    "findings": [
+                        {"claim": "c1", "citations": ["https://example.com/a"]},
+                        {"claim": "c2", "citations": ["https://example.com/r2_extra"]},
+                    ],
+                    "open_questions": [],
+                }
+            )
+        )
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    class TwoRoundRunner:
+        def spawn_parallel(self, tasks, **kwargs):
+            return [
+                WorkerResult(
+                    task_id=t.id,
+                    output="x",
+                    citations=(f"https://example.com/{t.id}",),
+                    web_search_calls=2,
+                    success=True,
+                )
+                for t in tasks
+            ]
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=TwoRoundRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            max_tasks=3,
+            enable_round2=True,
+            round2_max_tasks=1,
+            target_web_search_calls=1,
+            min_total_citations=1,
+            min_total_domains=0,
+        ),
+        emitter=None,
+    )
+
+    outcome = wf.run("query")
+    assert len(outcome.tasks) == 4
+    assert any(t.id == "r2_extra" for t in outcome.tasks)
+
+
+def test_deep_research_workflow_min_domains_enforced(monkeypatch):
+    from common import llm as common_llm
+
+    def fake_completion(**kwargs):
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        if "research orchestrator" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "a", "search_query": "q1", "instructions": "i1"},
+                            {"id": "b", "search_query": "q2", "instructions": "i2"},
+                            {"id": "c", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+        return Resp(
+            json.dumps(
+                {
+                    "title": "REPORT",
+                    "summary_bullets": ["a"],
+                    "findings": [{"claim": "c", "citations": ["https://example.com/a"]}],
+                    "open_questions": [],
+                }
+            )
+        )
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    class SameDomainRunner:
+        def spawn_parallel(self, tasks, **kwargs):
+            return [
+                WorkerResult(
+                    task_id=t.id,
+                    output="x",
+                    citations=("https://example.com/same",),
+                    web_search_calls=1,
+                    success=True,
+                )
+                for t in tasks
+            ]
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=SameDomainRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            min_total_citations=1,
+            min_total_domains=2,
+        ),
+        emitter=None,
+    )
+
+    with pytest.raises(RuntimeError):
+        wf.run("query")

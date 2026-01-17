@@ -81,11 +81,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     research = subparsers.add_parser("research", help="Deep research (Tavily + orchestrator-workers)")
     research.add_argument("query", nargs="?", help="Research query (required unless --resume)")
+    research.add_argument("--profile", default="quick", choices=["quick", "deep"])
     research.add_argument("--model", default="gpt-4o")
-    research.add_argument("--max-workers", type=int, default=5, help="Parallel worker concurrency")
-    research.add_argument("--worker-iterations", type=int, default=6)
-    research.add_argument("--worker-timeout", type=float, default=120.0)
-    research.add_argument("--min-citations", type=int, default=3)
+    research.add_argument("--max-workers", type=int, default=None, help="Parallel worker concurrency")
+    research.add_argument("--worker-iterations", type=int, default=None)
+    research.add_argument("--worker-timeout", type=float, default=None)
+    research.add_argument("--max-tasks", type=int, default=None, help="Max planned tasks (round 1)")
+    research.add_argument("--page-size", type=int, default=None, help="Tavily page_size (1-20)")
+    research.add_argument("--max-pages", type=int, default=None, help="Encourage pagination up to N pages")
+    research.add_argument("--target-web-search-calls", type=int, default=None, help="Target web_search calls per worker (guidance only)")
+    research.add_argument("--min-web-search-calls", type=int, default=None, help="(Deprecated) Alias for --target-web-search-calls")
+    research.add_argument("--max-web-search-calls", type=int, default=None, help="Max web_search calls per worker")
+    research.add_argument("--min-domains", type=int, default=None, help="Min unique domains across all citations")
+    research.add_argument("--round2-max-tasks", type=int, default=None, help="Max follow-up tasks in deep profile")
+    research.add_argument("--min-citations", type=int, default=None)
     research.add_argument("--data-dir", default="data/sessions")
     research.add_argument("--session-id", default=None)
     research.add_argument("--resume", default=None, help="Resume an existing research session id")
@@ -361,15 +370,74 @@ def _cmd_research(args) -> int:
             msg = event.message or event.stage
             print(f"[{event.stage}] {msg}", file=sys.stderr)
 
+    profile = str(getattr(args, "profile", "quick") or "quick")
+
+    def _p(v, default):
+        return default if v is None else v
+
+    if profile == "deep":
+        defaults = {
+            "max_workers": 6,
+            "worker_iterations": 12,
+            "worker_timeout": 300.0,
+            "max_tasks": 8,
+            "round2_max_tasks": 4,
+            "page_size": 10,
+            "max_pages": 4,
+            "target_web_search_calls": 4,
+            "max_web_search_calls": 8,
+            "min_citations": 15,
+            "min_domains": 6,
+            "enable_round2": True,
+        }
+    else:
+        defaults = {
+            "max_workers": 3,
+            "worker_iterations": 6,
+            "worker_timeout": 120.0,
+            "max_tasks": 5,
+            "round2_max_tasks": 0,
+            "page_size": 6,
+            "max_pages": 2,
+            "target_web_search_calls": 2,
+            "max_web_search_calls": 4,
+            "min_citations": 3,
+            "min_domains": 3,
+            "enable_round2": False,
+        }
+
+    max_workers = int(_p(args.max_workers, defaults["max_workers"]))
+    worker_iterations = int(_p(args.worker_iterations, defaults["worker_iterations"]))
+    worker_timeout = float(_p(args.worker_timeout, defaults["worker_timeout"]))
+    max_tasks = int(_p(args.max_tasks, defaults["max_tasks"]))
+    round2_max_tasks = int(_p(args.round2_max_tasks, defaults["round2_max_tasks"]))
+    page_size = int(_p(args.page_size, defaults["page_size"]))
+    max_pages = int(_p(args.max_pages, defaults["max_pages"]))
+    target_web_search_calls = int(
+        _p(_p(args.target_web_search_calls, args.min_web_search_calls), defaults["target_web_search_calls"])
+    )
+    max_web_search_calls = int(_p(args.max_web_search_calls, defaults["max_web_search_calls"]))
+    min_citations = int(_p(args.min_citations, defaults["min_citations"]))
+    min_domains = int(_p(args.min_domains, defaults["min_domains"]))
+    enable_round2 = bool(defaults["enable_round2"]) and round2_max_tasks > 0
+
     workflow = DeepResearchWorkflow(
         subagent_runner=runtime.subagent_runner,
         parallel_runner=ParallelWorkerRunner(runtime.subagent_runner),
         config=DeepResearchConfig(
             model=resolve_model_alias(args.model),
-            max_workers=int(args.max_workers),
-            worker_max_iterations=int(args.worker_iterations),
-            worker_timeout_s=float(args.worker_timeout),
-            min_total_citations=max(0, int(args.min_citations)),
+            max_workers=max_workers,
+            worker_max_iterations=worker_iterations,
+            worker_timeout_s=worker_timeout,
+            max_tasks=max_tasks,
+            round2_max_tasks=round2_max_tasks,
+            page_size=page_size,
+            max_pages=max_pages,
+            target_web_search_calls=target_web_search_calls,
+            max_web_search_calls=max_web_search_calls,
+            min_total_domains=min_domains,
+            enable_round2=enable_round2,
+            min_total_citations=max(0, min_citations),
             strict_all=True,
             best_effort=bool(args.best_effort),
         ),
@@ -401,10 +469,19 @@ def _cmd_research(args) -> int:
             "model": resolve_model_alias(args.model),
             "status": "running",
             "config": {
-                "max_workers": int(args.max_workers),
-                "worker_iterations": int(args.worker_iterations),
-                "worker_timeout": float(args.worker_timeout),
-                "min_citations": int(args.min_citations),
+                "profile": profile,
+                "max_workers": int(max_workers),
+                "worker_iterations": int(worker_iterations),
+                "worker_timeout": float(worker_timeout),
+                "max_tasks": max_tasks,
+                "page_size": page_size,
+                "max_pages": max_pages,
+                "target_web_search_calls": target_web_search_calls,
+                "max_web_search_calls": max_web_search_calls,
+                "round2_max_tasks": round2_max_tasks,
+                "min_citations": min_citations,
+                "min_domains": min_domains,
+                "enable_round2": bool(enable_round2),
                 "best_effort": bool(args.best_effort),
                 "resume": bool(resume_id),
                 "max_attempts": int(args.max_attempts),

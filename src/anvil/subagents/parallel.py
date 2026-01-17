@@ -39,6 +39,7 @@ class ParallelWorkerRunner:
         max_workers: int = 5,
         timeout: float | None = 60.0,
         allow_writes: bool = False,
+        max_web_search_calls: int | None = None,
     ) -> list[WorkerResult]:
         if not tasks:
             return []
@@ -47,13 +48,16 @@ class ParallelWorkerRunner:
 
         results: list[WorkerResult] = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            run_kwargs = {"allowed_tool_names": allowed_tool_names}
+            if max_web_search_calls is not None:
+                run_kwargs["max_web_search_calls"] = max_web_search_calls
             futures = {
                 executor.submit(
                     self.runner.run_task_with_trace,
                     prompt=task.prompt,
                     agent_name=task.agent_name,
                     max_iterations=task.max_iterations,
-                    allowed_tool_names=allowed_tool_names,
+                    **run_kwargs,
                 ): task
                 for task in tasks
             }

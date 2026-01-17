@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from common import llm
 from common.events import EventEmitter, ProgressEvent
@@ -23,6 +24,14 @@ class DeepResearchConfig:
     max_workers: int = 5
     worker_max_iterations: int = 6
     worker_timeout_s: float = 120.0
+    max_tasks: int = 5
+    page_size: int = 8
+    max_pages: int = 3
+    target_web_search_calls: int = 2
+    max_web_search_calls: int = 6
+    min_total_domains: int = 3
+    enable_round2: bool = False
+    round2_max_tasks: int = 3
     require_citations: bool = True
     min_total_citations: int = 3
     strict_all: bool = True
@@ -39,6 +48,9 @@ class DeepResearchOutcome:
     report_markdown: str
     planner_raw: str = ""
     planner_error: str | None = None
+    gap_plan: dict[str, Any] | None = None
+    gap_planner_raw: str = ""
+    gap_planner_error: str | None = None
 
 
 def _planning_prompt(query: str, *, max_tasks: int) -> str:
@@ -63,6 +75,35 @@ Return ONLY valid JSON in this exact shape:
 Rules:
 - Provide 3 to {max_tasks} tasks.
 - Prefer diverse angles (definitions, market map, pros/cons, recent changes, technical details).
+- Each task must be answerable via web search results (URLs).
+"""
+
+
+def _gap_fill_prompt(query: str, findings: list[dict[str, Any]], *, max_tasks: int) -> str:
+    return f"""You are a research orchestrator.
+
+Goal: propose follow-up web searches to fill gaps after an initial research pass.
+
+User query:
+{query}
+
+Current findings (JSON):
+{json.dumps(findings, ensure_ascii=False)}
+
+Return ONLY valid JSON in this exact shape:
+{{
+  "tasks": [
+    {{
+      "id": "short_id",
+      "search_query": "web search query",
+      "instructions": "what to look for and what to return"
+    }}
+  ]
+}}
+
+Rules:
+- Provide 0 to {max_tasks} follow-up tasks.
+- Only propose tasks that address specific gaps in the current findings.
 - Each task must be answerable via web search results (URLs).
 """
 
@@ -119,28 +160,30 @@ class DeepResearchWorkflow:
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="plan", current=0, total=None, message="Planning searches"))
 
-        plan, planner_raw, planner_error = self._plan(query)
-        tasks = self._to_worker_tasks(query, plan)
+        plan, planner_raw, planner_error = self._plan(query, max_tasks=self.config.max_tasks, min_tasks=3)
+        round1_tasks = self._to_worker_tasks(query, plan)
 
         if self.emitter is not None:
             self.emitter.emit(
                 ProgressEvent(
                     stage="workers",
                     current=0,
-                    total=len(tasks),
-                    message=f"Running {len(tasks)} workers",
+                    total=len(round1_tasks),
+                    message=f"Running {len(round1_tasks)} tasks (max concurrency: {self.config.max_workers})",
                 )
             )
 
         results = self.parallel_runner.spawn_parallel(
-            tasks,
+            round1_tasks,
             max_workers=self.config.max_workers,
             timeout=self.config.worker_timeout_s,
             allow_writes=False,
+            max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
         )
 
         results = self._apply_worker_invariants(results)
         citations = self._collect_citations_from_traces(results)
+        domains = self._collect_domains(citations)
         failures = [r for r in results if not r.success]
 
         if self.config.strict_all and failures and not self.config.best_effort:
@@ -154,6 +197,12 @@ class DeepResearchWorkflow:
                 raise RuntimeError(
                     "Deep research requires web citations but none (or too few) were collected.\n"
                     "Fix: run `uv sync --extra search` and ensure `TAVILY_API_KEY` is set.\n\n"
+                    f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
+                )
+            if len(domains) < max(0, int(self.config.min_total_domains)):
+                raise RuntimeError(
+                    "Deep research requires broader source coverage but too few unique domains were collected.\n"
+                    f"Need >= {self.config.min_total_domains} domains, got {len(domains)}.\n\n"
                     f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
                 )
 
@@ -171,6 +220,57 @@ class DeepResearchWorkflow:
                 }
             )
 
+        gap_plan = None
+        gap_planner_raw = ""
+        gap_planner_error = None
+        round2_tasks: list[WorkerTask] = []
+        if self.config.enable_round2 and not self.config.best_effort:
+            if self.emitter is not None:
+                self.emitter.emit(
+                    ProgressEvent(stage="gap", current=0, total=None, message="Planning follow-up searches")
+                )
+            gap_plan, gap_planner_raw, gap_planner_error = self._gap_fill_plan(query, findings)
+            round2_tasks = self._to_worker_tasks(query, gap_plan) if gap_plan else []
+            if round2_tasks:
+                if self.emitter is not None:
+                    self.emitter.emit(
+                        ProgressEvent(
+                            stage="workers",
+                            current=0,
+                            total=len(round2_tasks),
+                            message=f"Running {len(round2_tasks)} follow-up tasks (max concurrency: {self.config.max_workers})",
+                        )
+                    )
+                more = self.parallel_runner.spawn_parallel(
+                    round2_tasks,
+                    max_workers=self.config.max_workers,
+                    timeout=self.config.worker_timeout_s,
+                    allow_writes=False,
+                    max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
+                )
+                more = self._apply_worker_invariants(more)
+                results = list(results) + list(more)
+                citations = self._collect_citations_from_traces(results)
+                failures = [r for r in results if not r.success]
+                if self.config.strict_all and failures:
+                    raise RuntimeError(
+                        "Deep research failed because one or more workers failed.\n\n"
+                        f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
+                    )
+                findings = []
+                for r in results:
+                    findings.append(
+                        {
+                            "task_id": r.task_id,
+                            "success": r.success,
+                            "output": r.output,
+                            "error": r.error,
+                            "citations": list(r.citations),
+                            "sources": getattr(r, "sources", {}) or {},
+                            "web_search_calls": int(r.web_search_calls or 0),
+                        }
+                    )
+
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message="Synthesizing report"))
 
@@ -179,21 +279,28 @@ class DeepResearchWorkflow:
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="done", current=1, total=1, message="Done"))
 
+        combined_plan = plan
+        if round2_tasks:
+            combined_plan = {"tasks": (plan.get("tasks") or []) + (gap_plan.get("tasks") or [])} if gap_plan else plan
+
         return DeepResearchOutcome(
             query=query,
-            plan=plan,
+            plan=combined_plan,
             planner_raw=planner_raw,
             planner_error=planner_error,
-            tasks=tasks,
+            tasks=round1_tasks + round2_tasks,
             results=results,
             citations=citations,
             report_markdown=report,
+            gap_plan=gap_plan,
+            gap_planner_raw=gap_planner_raw,
+            gap_planner_error=gap_planner_error,
         )
 
-    def _plan(self, query: str) -> tuple[dict[str, Any], str, str | None]:
+    def _plan(self, query: str, *, max_tasks: int, min_tasks: int) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
             model=self.config.model,
-            messages=[{"role": "user", "content": _planning_prompt(query, max_tasks=5)}],
+            messages=[{"role": "user", "content": _planning_prompt(query, max_tasks=max(1, int(max_tasks)))}],
             temperature=0.2,
             max_tokens=800,
         )
@@ -228,7 +335,7 @@ class DeepResearchWorkflow:
             return self._fallback_plan(query), content, msg
 
         try:
-            validated = self._validate_plan(plan)
+            validated = self._validate_plan(plan, min_tasks=min_tasks)
         except PlanningError as e:
             if not self.config.best_effort:
                 raise PlanningError(str(e), raw=content) from None
@@ -245,6 +352,33 @@ class DeepResearchWorkflow:
             return self._fallback_plan(query), content, msg
 
         return validated, content, None
+
+    def _gap_fill_plan(self, query: str, findings: list[dict[str, Any]]) -> tuple[dict[str, Any], str, str | None]:
+        resp = llm.completion(
+            model=self.config.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": _gap_fill_prompt(query, findings, max_tasks=max(0, int(self.config.round2_max_tasks))),
+                }
+            ],
+            temperature=0.2,
+            max_tokens=800,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        if not content:
+            raise PlanningError("Gap planner returned an empty response.", raw=content)
+        try:
+            plan = self._parse_planner_json(content)
+        except Exception as e:
+            raise PlanningError(f"Gap planner returned invalid JSON: {e}", raw=content) from e
+        validated = self._validate_plan(plan, min_tasks=0)
+        tasks = validated.get("tasks") or []
+        # Prefix task IDs to avoid collisions with round 1.
+        for t in tasks:
+            if isinstance(t, dict) and isinstance(t.get("id"), str) and not t["id"].startswith("r2_"):
+                t["id"] = f"r2_{t['id']}"
+        return {"tasks": tasks[: max(0, int(self.config.round2_max_tasks))]}, content, None
 
     def _parse_planner_json(self, content: str) -> Any:
         try:
@@ -300,7 +434,7 @@ class DeepResearchWorkflow:
             ]
         }
 
-    def _validate_plan(self, plan: Any) -> dict[str, Any]:
+    def _validate_plan(self, plan: Any, *, min_tasks: int = 3) -> dict[str, Any]:
         if not isinstance(plan, dict):
             raise PlanningError("Planner output must be a JSON object")
         tasks = plan.get("tasks")
@@ -322,8 +456,8 @@ class DeepResearchWorkflow:
                 {"id": task_id, "search_query": search_query, "instructions": instructions}
             )
 
-        if len(validated_tasks) < 3:
-            raise PlanningError("Planner output did not produce enough valid tasks (need >= 3)")
+        if len(validated_tasks) < int(min_tasks):
+            raise PlanningError(f"Planner output did not produce enough valid tasks (need >= {min_tasks})")
 
         return {"tasks": validated_tasks[:10]}
 
@@ -350,7 +484,10 @@ class DeepResearchWorkflow:
                 continue
             prompt = (
                 "Use the `web_search` tool to gather sources and extract key facts.\n"
-                "You MUST call `web_search` at least once. Prefer 2-3 calls with different queries/pages.\n\n"
+                f"Aim for ~{max(1, int(self.config.target_web_search_calls))} `web_search` calls.\n"
+                f"Use pagination (page=1..{max(1, int(self.config.max_pages))}) and page_size={max(1, int(self.config.page_size))}.\n"
+                f"Aim for 2+ distinct query variants (refine queries as you learn).\n"
+                "Stop searching once you have enough evidence and then write a concise note.\n\n"
                 f"Search query: {search_query}\n\n"
                 f"Instructions: {instructions}\n\n"
                 "Return a short Markdown note with bullet points and cite URLs.\n"
@@ -512,6 +649,19 @@ class DeepResearchWorkflow:
                     urls.add(u)
         return sorted(urls)
 
+    def _collect_domains(self, citations: list[str]) -> list[str]:
+        domains: set[str] = set()
+        for u in citations:
+            if not isinstance(u, str) or not u.startswith("http"):
+                continue
+            try:
+                netloc = urlparse(u).netloc.lower().strip()
+            except Exception:
+                continue
+            if netloc:
+                domains.add(netloc)
+        return sorted(domains)
+
     def _format_worker_diagnostics(self, results) -> str:
         lines: list[str] = []
         for r in results:
@@ -526,24 +676,13 @@ class DeepResearchWorkflow:
             if not r.success:
                 updated.append(r)
                 continue
-            if int(getattr(r, "web_search_calls", 0) or 0) < 1:
-                updated.append(
-                    WorkerResult(
-                        task_id=r.task_id,
-                        output=r.output,
-                        citations=r.citations,
-                        web_search_calls=r.web_search_calls,
-                        success=False,
-                        error="Worker did not call web_search",
-                    )
-                )
-                continue
             if len(getattr(r, "citations", ()) or ()) < 1:
                 updated.append(
                     WorkerResult(
                         task_id=r.task_id,
                         output=r.output,
                         citations=r.citations,
+                        sources=getattr(r, "sources", {}) or {},
                         web_search_calls=r.web_search_calls,
                         success=False,
                         error="Worker collected no citations",

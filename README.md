@@ -86,10 +86,15 @@ uv sync --extra search
 export TAVILY_API_KEY="tvly-..."
 uv run anvil research "competitive analysis of AI coding agents"
 
-# Saved artifacts (default)
-# - `data/sessions/<session_id>/meta.json`
-# - `data/sessions/<session_id>/research/report.md`
-# Flags: --session-id, --data-dir, --output, --no-save-artifacts, --min-citations, --best-effort
+# Research profiles
+uv run anvil research --profile quick "competitive analysis of AI coding agents"   # default
+uv run anvil research --profile deep "competitive analysis of AI coding agents"    # ~15–20m, includes round-2 gap fill
+
+    # Saved artifacts (default)
+    # - `data/sessions/<session_id>/meta.json`
+    # - `data/sessions/<session_id>/research/report.md`
+    # Flags: --profile, --session-id, --data-dir, --output, --no-save-artifacts, --min-citations, --min-domains,
+    #        --target-web-search-calls, --max-web-search-calls, --best-effort
 
 # Resume research (reruns failed workers; fails unless all succeed)
 uv run anvil research --resume <session_id>
