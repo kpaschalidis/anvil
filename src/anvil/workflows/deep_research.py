@@ -198,8 +198,20 @@ class DeepResearchWorkflow:
             max_tokens=800,
         )
         content = (resp.choices[0].message.content or "").strip()
+        if not content:
+            msg = (
+                "Planner returned an empty response. "
+                "Check that your LLM provider API key is set for the selected model."
+            )
+            if not self.config.best_effort:
+                raise PlanningError(msg, raw=content)
+            if self.emitter is not None:
+                self.emitter.emit(
+                    ProgressEvent(stage="plan", current=0, total=None, message=f"WARNING: {msg}")
+                )
+            return self._fallback_plan(query), content, msg
         try:
-            plan = json.loads(content)
+            plan = self._parse_planner_json(content)
         except Exception as e:
             msg = f"Planner returned invalid JSON: {e}"
             if not self.config.best_effort:
@@ -233,6 +245,39 @@ class DeepResearchWorkflow:
             return self._fallback_plan(query), content, msg
 
         return validated, content, None
+
+    def _parse_planner_json(self, content: str) -> Any:
+        try:
+            return json.loads(content)
+        except Exception:
+            pass
+
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            inner = self._extract_single_code_fence(stripped)
+            if inner is not None:
+                return json.loads(inner)
+
+        raise ValueError("content is not a JSON object")
+
+    def _extract_single_code_fence(self, text: str) -> str | None:
+        lines = text.splitlines()
+        if not lines:
+            return None
+        if not lines[0].startswith("```"):
+            return None
+        # Allow ```json or ```JSON etc.
+        closing_idx = None
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "```":
+                closing_idx = i
+                break
+        if closing_idx is None:
+            return None
+        inner = "\n".join(lines[1:closing_idx]).strip()
+        if not inner:
+            return None
+        return inner
 
     def _fallback_plan(self, query: str) -> dict[str, Any]:
         return {
