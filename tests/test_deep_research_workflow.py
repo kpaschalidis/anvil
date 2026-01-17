@@ -41,9 +41,23 @@ def test_deep_research_workflow_fallback_plan(monkeypatch):
 
         # return invalid JSON for planning, and a known string for synthesis
         prompt = kwargs["messages"][0]["content"]
-        if "Return ONLY valid JSON" in prompt:
+        if "research orchestrator" in prompt and '"tasks"' in prompt:
             return Resp("not json")
-        return Resp("REPORT")
+        return Resp(
+            json.dumps(
+                {
+                    "title": "REPORT",
+                    "summary_bullets": ["a"],
+                    "findings": [
+                        {
+                            "claim": "c",
+                            "citations": ["https://example.com/overview"],
+                        }
+                    ],
+                    "open_questions": [],
+                }
+            )
+        )
 
     monkeypatch.setattr(common_llm, "completion", fake_completion)
 
@@ -53,6 +67,6 @@ def test_deep_research_workflow_fallback_plan(monkeypatch):
         config=DeepResearchConfig(model="gpt-4o", max_workers=2, worker_max_iterations=2, worker_timeout_s=10.0),
         emitter=None,
     )
-    out = wf.run("query")
-    assert out.startswith("REPORT")
-    assert "## Sources" in out
+    outcome = wf.run("query")
+    assert outcome.report_markdown.startswith("# REPORT")
+    assert "## Sources" in outcome.report_markdown

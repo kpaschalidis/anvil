@@ -46,7 +46,7 @@ class AnvilAgent:
             config=DeepResearchConfig(model=self.runtime.config.model),
             emitter=None,
         )
-        return workflow.run(query)
+        return workflow.run(query).report_markdown
 
     def run_interactive(self, *, initial_message: str | None = None) -> None:
         repl = AnvilREPL(self.runtime)

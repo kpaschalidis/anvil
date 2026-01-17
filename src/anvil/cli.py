@@ -1,6 +1,7 @@
 import sys
 import argparse
 import subprocess
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -149,6 +150,13 @@ def _main_subcommands(argv: list[str]) -> int:
     research_parser.add_argument("--max-workers", type=int, default=5)
     research_parser.add_argument("--worker-iterations", type=int, default=6)
     research_parser.add_argument("--worker-timeout", type=float, default=120.0)
+    research_parser.add_argument("--data-dir", default="data/sessions")
+    research_parser.add_argument("--session-id", default=None)
+    research_parser.add_argument("--output", default=None, help="Write report markdown to this path")
+    research_parser.add_argument("--no-save-artifacts", action="store_true")
+    research_parser.add_argument("--min-citations", type=int, default=3)
+    research_parser.add_argument("--strict-all", action="store_true")
+    research_parser.add_argument("--best-effort", action="store_true")
 
     coding_parser = subparsers.add_parser("coding", help="(Legacy) Interactive coding mode")
     coding_parser.add_argument("files", nargs="*")
@@ -211,8 +219,11 @@ def _main_subcommands(argv: list[str]) -> int:
             return 2
 
         from common.events import EventEmitter, ProgressEvent
+        from common.ids import generate_id
         from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow
         from anvil.subagents.parallel import ParallelWorkerRunner
+        from anvil.workflows.research_artifacts import make_research_session_dir, utc_ts, write_json, write_text
+        from anvil.workflows.research_persist import persist_research_outcome
 
         root_path = _git_root_or_exit()
         runtime = AnvilRuntime(
@@ -234,17 +245,67 @@ def _main_subcommands(argv: list[str]) -> int:
                 max_workers=args.max_workers,
                 worker_max_iterations=args.worker_iterations,
                 worker_timeout_s=args.worker_timeout,
+                min_total_citations=max(0, int(args.min_citations)),
+                strict_all=bool(args.strict_all),
+                best_effort=bool(args.best_effort),
             ),
             emitter=EventEmitter(on_event),
         )
+        session_id = args.session_id or generate_id()
+        session_dir = make_research_session_dir(data_dir=args.data_dir, session_id=session_id)
+        meta_path = session_dir / "meta.json"
+
+        meta = {
+            "kind": "research",
+            "session_id": session_id,
+            "query": args.query,
+            "model": resolve_model_alias(args.model),
+            "ts_start": utc_ts(),
+            "config": {
+                "max_workers": args.max_workers,
+                "worker_iterations": args.worker_iterations,
+                "worker_timeout": args.worker_timeout,
+                "min_citations": args.min_citations,
+                "strict_all": bool(args.strict_all),
+                "best_effort": bool(args.best_effort),
+            },
+        }
+
         try:
-            report = workflow.run(args.query)
-        except Exception as e:
-            print(f"Error: {e}", file=sys.stderr)
-            return 1
-        else:
-            print(report)
+            outcome = workflow.run(args.query)
+            meta["ts_end"] = utc_ts()
+            meta["status"] = "completed"
+            meta["citations"] = len(outcome.citations)
+            meta["workers"] = {
+                "total": len(outcome.results),
+                "failed": sum(1 for r in outcome.results if not r.success),
+            }
+
+            paths = persist_research_outcome(
+                data_dir=args.data_dir,
+                session_id=session_id,
+                meta=meta,
+                outcome=outcome,
+                output_path=args.output,
+                save_artifacts=not bool(args.no_save_artifacts),
+            )
+            print(outcome.report_markdown)
+            if not args.output:
+                print(f"\nSaved: {paths['report_path']}")
+                print(f"Session: {session_id}")
             return 0
+        except Exception as e:
+            meta["ts_end"] = utc_ts()
+            meta["status"] = "failed"
+            meta["error"] = str(e)
+            write_json(meta_path, meta)
+            if not args.no_save_artifacts:
+                write_text(session_dir / "research" / "error.txt", str(e) + "\n")
+            print(f"Error: {e}", file=sys.stderr)
+            if not args.output:
+                print(f"Session: {session_id}", file=sys.stderr)
+                print(f"Artifacts: {session_dir}", file=sys.stderr)
+            return 1
 
     if args.command == "coding":
         return _main_legacy(["coding", *list(args.files)])

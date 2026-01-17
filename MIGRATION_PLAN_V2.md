@@ -21,13 +21,25 @@ This plan targets the “v2” outcome: incremental refactor, Scout owns `FetchS
   - [ ] Synthesis step: combine worker outputs into Markdown with citations (URLs).
   - [ ] Provide deterministic fallbacks when planning JSON parse fails.
 - [ ] Add a small configuration dataclass for tuning (workers, timeouts, model).
+- [ ] Strict mode policy (default: **strict grounding**):
+  - [ ] Fail-fast if Tavily/key missing (CLI preflight).
+  - [ ] Fail-fast if total citations collected < minimum threshold.
+  - [ ] Do **not** fail the run just because some workers fail, as long as grounding threshold is met.
+  - [ ] Add `--strict-all` (fail if any worker fails) and `--best-effort` (always produce output; loud warnings) flags.
+- [ ] Persist artifacts inside the session directory:
+  - [ ] Create `data/sessions/<session_id>/meta.json` with `kind="research"` and run config (no secrets).
+  - [ ] Write `data/sessions/<session_id>/research/plan.json`.
+  - [ ] Write `data/sessions/<session_id>/research/workers/<task_id>.json` (output + tool trace + citations).
+  - [ ] Write `data/sessions/<session_id>/research/report.md`.
+  - [ ] Always write artifacts even on failure (store error details in `meta.json` and/or `error.txt`).
 
 ### Phase 6 — Wiring + Tests + Docs
 - [ ] Replace `AnvilAgent._tool_deep_research()` stub to call `DeepResearchWorkflow`.
 - [ ] Update `anvil` CLI subcommand `research` to call `DeepResearchWorkflow` (argparse).
 - [ ] Add unit tests:
   - [ ] `web_search` tool: missing dependency/key error; pagination slicing contract.
-  - [ ] `DeepResearchWorkflow`: uses fake LLM + fake worker outputs (no network).
+  - [ ] `DeepResearchWorkflow`: uses fake LLM + fake worker outputs (no network) and enforces strict grounding.
+  - [ ] Artifact persistence: session folder layout, no secrets in meta, artifacts written on failure.
 - [ ] Update docs:
   - [ ] `README.md` / `CLI_EXAMPLES.md`: `uv sync --extra search`, `anvil research "..."`.
 
@@ -36,4 +48,3 @@ This plan targets the “v2” outcome: incremental refactor, Scout owns `FetchS
 - [ ] Implement `AnalyzeService` (deterministic + optional LLM).
 - [ ] Implement `NeedFindingWorkflow` (fetch → extract → analyze → report).
 - [ ] Wire into agent + CLI (`anvil need-finding ...`).
-

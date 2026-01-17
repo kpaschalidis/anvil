@@ -49,3 +49,22 @@
 - [ ] Wire `AnvilAgent` tool `deep_research` to DeepResearchWorkflow.
 - [ ] Add tests for `web_search` and `DeepResearchWorkflow` (no network).
 - [ ] Update docs for `uv sync --extra search` and new commands.
+
+## Deep Research hardening (strict grounding + artifacts)
+- [ ] Remove implicit URL scraping; only tool-trace citations count.
+- [ ] Enforce per-worker invariants: `web_search_calls>=1` and `citations>=1` (else mark worker failed).
+- [ ] Add strict modes:
+  - [ ] Default: strict grounding (`min_total_citations` required; allow some worker failures).
+  - [ ] `--strict-all`: fail if any worker fails.
+  - [ ] `--best-effort`: allow partial output with explicit warnings.
+- [ ] Persist artifacts in session dir:
+  - [ ] `data/sessions/<session_id>/meta.json` (`kind="research"`, config, timestamps; no secrets).
+  - [ ] `data/sessions/<session_id>/research/plan.json`.
+  - [ ] `data/sessions/<session_id>/research/workers/<task_id>.json` (output + trace + citations).
+  - [ ] `data/sessions/<session_id>/research/report.md`.
+  - [ ] Always write artifacts even on failure.
+- [ ] Make report citeable:
+  - [ ] Synthesis returns structured JSON with claims + citation URLs.
+  - [ ] Validate citations are subset of collected citations; downgrade or fail depending on strictness.
+- [ ] CLI flags: `--session-id`, `--data-dir`, `--output`, `--no-save-artifacts`, `--min-citations`, `--strict-all`, `--best-effort`.
+- [ ] Tests: strict grounding failure, artifact layout + redaction, claim→citation validation.

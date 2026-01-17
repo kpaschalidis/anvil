@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +8,7 @@ from common import llm
 from common.events import EventEmitter, ProgressEvent
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerTask
 from anvil.subagents.task_tool import SubagentRunner
+from anvil.subagents.parallel import WorkerResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +19,18 @@ class DeepResearchConfig:
     worker_timeout_s: float = 120.0
     require_citations: bool = True
     min_total_citations: int = 3
+    strict_all: bool = False
+    best_effort: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DeepResearchOutcome:
+    query: str
+    plan: dict[str, Any]
+    tasks: list[WorkerTask]
+    results: list[WorkerResult]
+    citations: list[str]
+    report_markdown: str
 
 
 def _planning_prompt(query: str, *, max_tasks: int) -> str:
@@ -56,16 +68,24 @@ User query:
 Worker findings (JSON):
 {json.dumps(findings, ensure_ascii=False)}
 
-Write a concise Markdown report with:
-- Summary (5-10 bullets)
-- Key findings with citations (link URLs)
-- Open questions / risks
+Return ONLY valid JSON in this exact shape:
+{{
+  "title": "string",
+  "summary_bullets": ["string"],
+  "findings": [
+    {{
+      "claim": "string",
+      "citations": ["https://..."]
+    }}
+  ],
+  "open_questions": ["string"]
+}}
 
-Be explicit about uncertainty. Do not invent citations.
+Rules:
+- Every item in `findings[].citations` MUST be a URL present in the worker findings citations.
+- If you cannot support a claim with citations, omit it.
+- Be explicit about uncertainty.
 """
-
-
-_URL_RE = re.compile(r"https?://\\S+")
 
 
 class DeepResearchWorkflow:
@@ -82,7 +102,7 @@ class DeepResearchWorkflow:
         self.config = config
         self.emitter = emitter
 
-    def run(self, query: str) -> str:
+    def run(self, query: str) -> DeepResearchOutcome:
         query = (query or "").strip()
         if not query:
             raise ValueError("query is required")
@@ -110,14 +130,23 @@ class DeepResearchWorkflow:
             allow_writes=False,
         )
 
-        citations = self._collect_citations(results)
-        if self.config.require_citations and len(citations) < self.config.min_total_citations:
-            details = self._format_worker_diagnostics(results)
+        results = self._apply_worker_invariants(results)
+        citations = self._collect_citations_from_traces(results)
+        failures = [r for r in results if not r.success]
+
+        if self.config.strict_all and failures and not self.config.best_effort:
             raise RuntimeError(
-                "Deep research requires web citations but none (or too few) were collected.\n"
-                "Fix: run `uv sync --extra search` and ensure `TAVILY_API_KEY` is set.\n\n"
-                f"Diagnostics:\n{details}"
+                "Deep research failed because one or more workers failed.\n\n"
+                f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
             )
+
+        if self.config.require_citations and not self.config.best_effort:
+            if len(citations) < self.config.min_total_citations:
+                raise RuntimeError(
+                    "Deep research requires web citations but none (or too few) were collected.\n"
+                    "Fix: run `uv sync --extra search` and ensure `TAVILY_API_KEY` is set.\n\n"
+                    f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
+                )
 
         findings: list[dict[str, Any]] = []
         for r in results:
@@ -135,14 +164,19 @@ class DeepResearchWorkflow:
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message="Synthesizing report"))
 
-        report = self._synthesize(query, findings)
-        if citations:
-            report = report + "\n\n---\n\n## Sources\n" + "\n".join(f"- {u}" for u in citations)
+        report = self._synthesize_and_render(query, findings, citations)
 
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="done", current=1, total=1, message="Done"))
 
-        return report
+        return DeepResearchOutcome(
+            query=query,
+            plan=plan,
+            tasks=tasks,
+            results=results,
+            citations=citations,
+            report_markdown=report,
+        )
 
     def _plan(self, query: str) -> dict[str, Any]:
         resp = llm.completion(
@@ -213,24 +247,95 @@ class DeepResearchWorkflow:
             )
         return worker_tasks
 
-    def _synthesize(self, query: str, findings: list[dict[str, Any]]) -> str:
+    def _synthesize_and_render(
+        self,
+        query: str,
+        findings: list[dict[str, Any]],
+        citations: list[str],
+    ) -> str:
         resp = llm.completion(
             model=self.config.model,
             messages=[{"role": "user", "content": _synthesis_prompt(query, findings)}],
             temperature=0.2,
             max_tokens=1200,
         )
-        return (resp.choices[0].message.content or "").strip()
+        raw = (resp.choices[0].message.content or "").strip()
+        payload: dict[str, Any] | None = None
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            if not self.config.best_effort:
+                raise RuntimeError("Synthesis returned invalid JSON")
 
-    def _collect_citations(self, results) -> list[str]:
+        title = str((payload or {}).get("title") or "Deep Research Report")
+        summary = (payload or {}).get("summary_bullets") or []
+        findings_out = (payload or {}).get("findings") or []
+        open_qs = (payload or {}).get("open_questions") or []
+
+        allowed = set(citations)
+        rendered_findings: list[str] = []
+        if isinstance(findings_out, list):
+            for it in findings_out:
+                if not isinstance(it, dict):
+                    continue
+                claim = str(it.get("claim") or "").strip()
+                cites = it.get("citations") or []
+                if not claim:
+                    continue
+                if not isinstance(cites, list):
+                    cites = []
+                cites = [c for c in cites if isinstance(c, str) and c in allowed]
+                if not cites:
+                    if self.config.best_effort:
+                        continue
+                    raise RuntimeError(f"Synthesis produced an uncited claim: {claim}")
+                rendered_findings.append(
+                    f"- {claim} " + " ".join(f"[source]({u})" for u in cites[:3])
+                )
+
+        if self.config.require_citations and not self.config.best_effort and not rendered_findings:
+            raise RuntimeError("Synthesis produced no cited findings")
+
+        lines: list[str] = [f"# {title}", ""]
+        if self.config.best_effort:
+            lines.extend(
+                [
+                    "> Warning: best-effort mode enabled; output may be incomplete.",
+                    "",
+                ]
+            )
+
+        if isinstance(summary, list) and summary:
+            lines.append("## Summary")
+            for b in summary[:12]:
+                if isinstance(b, str) and b.strip():
+                    lines.append(f"- {b.strip()}")
+            lines.append("")
+
+        if rendered_findings:
+            lines.append("## Findings")
+            lines.extend(rendered_findings)
+            lines.append("")
+
+        if isinstance(open_qs, list) and open_qs:
+            lines.append("## Open Questions")
+            for q in open_qs[:12]:
+                if isinstance(q, str) and q.strip():
+                    lines.append(f"- {q.strip()}")
+            lines.append("")
+
+        if citations:
+            lines.append("## Sources")
+            lines.extend(f"- {u}" for u in citations)
+            lines.append("")
+
+        return "\n".join(lines).strip()
+
+    def _collect_citations_from_traces(self, results) -> list[str]:
         urls: set[str] = set()
         for r in results:
             for u in getattr(r, "citations", ()) or ():
                 if isinstance(u, str) and u.startswith("http"):
-                    urls.add(u)
-            for u in _URL_RE.findall(r.output or ""):
-                u = u.rstrip(").,]}>\"'")
-                if u.startswith("http"):
                     urls.add(u)
         return sorted(urls)
 
@@ -241,3 +346,36 @@ class DeepResearchWorkflow:
                 f"- {r.task_id}: success={r.success} web_search_calls={getattr(r, 'web_search_calls', 0)} citations={len(getattr(r, 'citations', ()) or ())} error={r.error or ''}".rstrip()
             )
         return "\n".join(lines) if lines else "(no workers)"
+
+    def _apply_worker_invariants(self, results):
+        updated = []
+        for r in results:
+            if not r.success:
+                updated.append(r)
+                continue
+            if int(getattr(r, "web_search_calls", 0) or 0) < 1:
+                updated.append(
+                    WorkerResult(
+                        task_id=r.task_id,
+                        output=r.output,
+                        citations=r.citations,
+                        web_search_calls=r.web_search_calls,
+                        success=False,
+                        error="Worker did not call web_search",
+                    )
+                )
+                continue
+            if len(getattr(r, "citations", ()) or ()) < 1:
+                updated.append(
+                    WorkerResult(
+                        task_id=r.task_id,
+                        output=r.output,
+                        citations=r.citations,
+                        web_search_calls=r.web_search_calls,
+                        success=False,
+                        error="Worker collected no citations",
+                    )
+                )
+                continue
+            updated.append(r)
+        return updated

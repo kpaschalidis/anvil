@@ -79,6 +79,11 @@ uv sync --extra search
 export TAVILY_API_KEY="tvly-..."
 uv run anvil research "competitive analysis of AI coding agents"
 
+# Saved artifacts (default)
+# - `data/sessions/<session_id>/meta.json`
+# - `data/sessions/<session_id>/research/report.md`
+# Flags: --session-id, --data-dir, --output, --no-save-artifacts, --min-citations, --strict-all, --best-effort
+
 # Options
 uv run anvil --help
 uv run anvil --no-lint        # Disable auto-linting
