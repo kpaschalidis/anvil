@@ -353,6 +353,142 @@ class DeepResearchWorkflow:
 
         return validated, content, None
 
+    def _continuation_prompt(
+        self,
+        *,
+        base_prompt: str,
+        prior_output: str,
+        prior_citations: list[str],
+        additional_calls: int,
+    ) -> str:
+        prior = "\n".join(f"- {u}" for u in prior_citations[:15])
+        extra = max(1, int(additional_calls))
+        return (
+            base_prompt.strip()
+            + "\n\n"
+            + "Continue researching this same task.\n"
+            + f"Make ~{extra} additional `web_search` calls (if possible), focusing on NEW domains and NEW query variants.\n"
+            + f"Use pagination (page=1..{max(1, int(self.config.max_pages))}) and page_size={max(1, int(self.config.page_size))}.\n"
+            + "Avoid reusing URLs you already collected.\n\n"
+            + "Already collected URLs (do not reuse):\n"
+            + (prior if prior else "(none)")
+            + "\n\n"
+            + "Append new bullet points and cite any new URLs you used.\n"
+            + (f"\n\nPrevious notes:\n{prior_output.strip()}" if (prior_output or "").strip() else "")
+        )
+
+    def _merge_worker_results(self, a: WorkerResult, b: WorkerResult) -> WorkerResult:
+        citations = tuple(sorted(set(a.citations or ()) | set(b.citations or ())))
+        sources = dict(getattr(a, "sources", {}) or {})
+        sources.update(dict(getattr(b, "sources", {}) or {}))
+        trace = tuple((getattr(a, "web_search_trace", ()) or ()) + (getattr(b, "web_search_trace", ()) or ()))
+        output_parts = []
+        if (a.output or "").strip():
+            output_parts.append(a.output.strip())
+        if (b.output or "").strip():
+            output_parts.append(b.output.strip())
+        duration_ms = None
+        if getattr(a, "duration_ms", None) is not None or getattr(b, "duration_ms", None) is not None:
+            duration_ms = int((getattr(a, "duration_ms", 0) or 0) + (getattr(b, "duration_ms", 0) or 0))
+        return WorkerResult(
+            task_id=a.task_id,
+            output="\n\n".join(output_parts),
+            citations=citations,
+            sources=sources,
+            web_search_calls=int(getattr(a, "web_search_calls", 0) or 0) + int(getattr(b, "web_search_calls", 0) or 0),
+            web_search_trace=trace,
+            iterations=int(getattr(a, "iterations", 0) or 0) + int(getattr(b, "iterations", 0) or 0),
+            duration_ms=duration_ms,
+            success=a.success and b.success,
+            error=a.error or b.error,
+        )
+
+    def _maybe_continue_workers(
+        self,
+        tasks: list[WorkerTask],
+        results: list[WorkerResult],
+        *,
+        stage_label: str,
+        message_prefix: str,
+    ) -> list[WorkerResult]:
+        if not self.config.enable_worker_continuation:
+            return results
+        if self.config.best_effort:
+            return results
+        target = max(1, int(self.config.target_web_search_calls))
+        if target <= 1:
+            return results
+        max_total = max(1, int(self.config.max_web_search_calls))
+        max_rounds = max(0, int(self.config.max_worker_continuations))
+        if max_rounds <= 0:
+            return results
+
+        task_by_id = {t.id: t for t in tasks}
+        results_by_id = {r.task_id: r for r in results}
+
+        for _ in range(max_rounds):
+            todo: list[WorkerTask] = []
+            for r in results_by_id.values():
+                if not r.success:
+                    continue
+                current_calls = int(getattr(r, "web_search_calls", 0) or 0)
+                remaining = max_total - current_calls
+                need = target - current_calls
+                if need <= 0 or remaining <= 0:
+                    continue
+                t = task_by_id.get(r.task_id)
+                if t is None:
+                    continue
+                prompt = self._continuation_prompt(
+                    base_prompt=t.prompt,
+                    prior_output=r.output,
+                    prior_citations=list(getattr(r, "citations", ()) or ()),
+                    additional_calls=min(need, remaining),
+                )
+                todo.append(
+                    WorkerTask(
+                        id=r.task_id,
+                        prompt=prompt,
+                        agent_name=t.agent_name,
+                        max_iterations=t.max_iterations,
+                        max_web_search_calls=remaining,
+                    )
+                )
+
+            if not todo:
+                break
+
+            if self.emitter is not None:
+                self.emitter.emit(
+                    ProgressEvent(
+                        stage=stage_label,
+                        current=0,
+                        total=len(todo),
+                        message=f"{message_prefix}: {len(todo)} task(s)",
+                    )
+                )
+
+            more = self.parallel_runner.spawn_parallel(
+                todo,
+                max_workers=self.config.max_workers,
+                timeout=self.config.worker_timeout_s,
+                allow_writes=False,
+                max_web_search_calls=None,
+            )
+            for nr in more:
+                prev = results_by_id.get(nr.task_id)
+                if prev is None:
+                    results_by_id[nr.task_id] = nr
+                    continue
+                if not nr.success:
+                    continue
+                results_by_id[nr.task_id] = self._merge_worker_results(prev, nr)
+
+        ordered: list[WorkerResult] = []
+        for r in results:
+            ordered.append(results_by_id.get(r.task_id, r))
+        return ordered
+
     def _gap_fill_plan(self, query: str, findings: list[dict[str, Any]]) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
             model=self.config.model,
@@ -684,6 +820,9 @@ class DeepResearchWorkflow:
                         citations=r.citations,
                         sources=getattr(r, "sources", {}) or {},
                         web_search_calls=r.web_search_calls,
+                        web_search_trace=getattr(r, "web_search_trace", ()) or (),
+                        iterations=int(getattr(r, "iterations", 0) or 0),
+                        duration_ms=getattr(r, "duration_ms", None),
                         success=False,
                         error="Worker collected no citations",
                     )

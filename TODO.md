@@ -15,13 +15,14 @@
 - [x] Deep research artifacts: persist `planner_raw.txt` + `planner_error.json` under session
 - [x] Fix deep research empty-task fallback bug (`_to_worker_tasks` should never reference undefined `query`)
 - [x] Tests: strict planning failure + best-effort fallback coverage
-- [ ] Improve citation UX: per-claim numbered citations + grounded “why this source” snippet
 - [x] Improve citation UX: per-claim numbered citations + grounded “why this source” snippet
 - [x] Sessions UX: sessions list both kinds by default + shortcuts to open fetch artifacts
 - [x] Fetch meta: allow FetchService to write/update `meta.json` (CLI not required)
 - [x] Docs sweep: no references to removed `scout` CLI
 - [x] Planning artifacts: include raw output on validation errors too
 - [x] Research profiles: `quick` default, `deep` for 15–20m
-- [x] Deep profile: pagination + min web_search calls enforced
+- [ ] Deep profile: worker continuation to spend budget (target calls are guidance; cap is enforced)
+- [ ] Research artifacts: persist per-call `web_search` trace + timings
 - [x] Deep profile: round-2 gap-fill (orchestrator→workers→synthesis)
 - [x] Replace per-worker min calls with coverage floors (domains/citations)
+- [ ] Deep profile: optional raw-content reads (deeper grounding)

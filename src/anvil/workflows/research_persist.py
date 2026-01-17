@@ -54,8 +54,11 @@ def persist_research_outcome(
                     "success": r.success,
                     "error": r.error,
                     "web_search_calls": r.web_search_calls,
+                    "iterations": getattr(r, "iterations", 0),
+                    "duration_ms": getattr(r, "duration_ms", None),
                     "citations": list(r.citations),
                     "sources": getattr(r, "sources", {}) or {},
+                    "web_search_trace": list(getattr(r, "web_search_trace", ()) or ()),
                     "output": r.output,
                 },
             )

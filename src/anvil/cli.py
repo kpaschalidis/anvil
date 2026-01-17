@@ -389,6 +389,8 @@ def _cmd_research(args) -> int:
             "min_citations": 15,
             "min_domains": 6,
             "enable_round2": True,
+            "enable_worker_continuation": True,
+            "max_worker_continuations": 2,
         }
     else:
         defaults = {
@@ -404,6 +406,8 @@ def _cmd_research(args) -> int:
             "min_citations": 3,
             "min_domains": 3,
             "enable_round2": False,
+            "enable_worker_continuation": False,
+            "max_worker_continuations": 0,
         }
 
     max_workers = int(_p(args.max_workers, defaults["max_workers"]))
@@ -420,6 +424,8 @@ def _cmd_research(args) -> int:
     min_citations = int(_p(args.min_citations, defaults["min_citations"]))
     min_domains = int(_p(args.min_domains, defaults["min_domains"]))
     enable_round2 = bool(defaults["enable_round2"]) and round2_max_tasks > 0
+    enable_worker_continuation = bool(defaults["enable_worker_continuation"])
+    max_worker_continuations = int(defaults["max_worker_continuations"])
 
     workflow = DeepResearchWorkflow(
         subagent_runner=runtime.subagent_runner,
@@ -436,6 +442,8 @@ def _cmd_research(args) -> int:
             target_web_search_calls=target_web_search_calls,
             max_web_search_calls=max_web_search_calls,
             min_total_domains=min_domains,
+            enable_worker_continuation=enable_worker_continuation,
+            max_worker_continuations=max_worker_continuations,
             enable_round2=enable_round2,
             min_total_citations=max(0, min_citations),
             strict_all=True,
@@ -478,6 +486,8 @@ def _cmd_research(args) -> int:
                 "max_pages": max_pages,
                 "target_web_search_calls": target_web_search_calls,
                 "max_web_search_calls": max_web_search_calls,
+                "enable_worker_continuation": bool(enable_worker_continuation),
+                "max_worker_continuations": int(max_worker_continuations),
                 "round2_max_tasks": round2_max_tasks,
                 "min_citations": min_citations,
                 "min_domains": min_domains,
