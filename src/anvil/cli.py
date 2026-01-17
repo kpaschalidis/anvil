@@ -14,6 +14,9 @@ from anvil.runtime.runtime import AnvilRuntime
 def main():
     load_dotenv()
 
+    if len(sys.argv) > 1 and sys.argv[1] == "fetch":
+        raise SystemExit(_main_fetch(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(description="Anvil - AI Coding Agent with Tools")
     parser.add_argument(
         "--model",
@@ -88,6 +91,81 @@ def main():
 
     repl = AnvilREPL(runtime)
     repl.run(initial_message=args.message)
+
+
+def _main_fetch(argv: list[str]) -> int:
+    import logging
+
+    from common.events import DocumentEvent, ErrorEvent, ProgressEvent
+    from scout.config import ScoutConfig, ConfigError
+    from scout.services.fetch import FetchConfig, FetchService
+
+    parser = argparse.ArgumentParser(prog="anvil fetch", description="Fetch raw documents (Scout fetch-only)")
+    parser.add_argument("topic")
+    parser.add_argument(
+        "--source",
+        action="append",
+        required=True,
+        help="Source name (repeatable), e.g. --source hackernews --source reddit",
+    )
+    parser.add_argument("--profile", default="quick", help="Scout profile (quick/standard/deep)")
+    parser.add_argument("--max-documents", type=int, default=100)
+    parser.add_argument("--data-dir", default="data/sessions")
+    parser.add_argument("--deep-comments", default="auto", choices=["auto", "always", "never"])
+    parser.add_argument("-v", "--verbose", action="store_true")
+
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    source_names: list[str] = []
+    for raw in args.source or []:
+        for part in str(raw).split(","):
+            part = part.strip()
+            if part:
+                source_names.append(part)
+    try:
+        scout_config = ScoutConfig.from_profile(args.profile, sources=source_names)
+        scout_config.validate(sources=source_names)
+    except ConfigError as e:
+        print(f"Error: {e}")
+        return 1
+
+    def on_event(event) -> None:
+        if isinstance(event, ProgressEvent):
+            if event.stage == "fetch":
+                if event.total:
+                    print(f"[{event.current}/{event.total}] {event.message}")
+                else:
+                    print(f"[{event.current}] {event.message}")
+            return
+        if isinstance(event, DocumentEvent):
+            return
+        if isinstance(event, ErrorEvent):
+            print(f"Error: {event.message}", file=sys.stderr)
+
+    service = FetchService(
+        FetchConfig(
+            topic=args.topic,
+            sources=source_names,
+            data_dir=args.data_dir,
+            max_documents=args.max_documents,
+            deep_comments=args.deep_comments,
+        ),
+        on_event=on_event,
+    )
+    result = service.run(scout_config=scout_config)
+
+    print(f"Session: {result.session_id}")
+    print(f"Documents: {result.documents_fetched}")
+    print(f"Duration: {result.duration_seconds:.1f}s")
+    if result.errors:
+        print(f"Errors: {len(result.errors)} (see stderr)")
+    return 0
 
 
 if __name__ == "__main__":
