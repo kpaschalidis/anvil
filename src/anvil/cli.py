@@ -1,6 +1,10 @@
-import sys
+from __future__ import annotations
+
 import argparse
+import logging
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,321 +15,13 @@ from anvil.runtime.repl import AnvilREPL
 from anvil.runtime.runtime import AnvilRuntime
 
 
-def main():
+def main() -> int:
     load_dotenv()
-    argv = sys.argv[1:]
-    if argv and argv[0] in {"fetch", "code", "need-finding", "research", "coding", "gui"}:
-        raise SystemExit(_main_subcommands(argv))
-    raise SystemExit(_main_legacy(argv))
+    return _main(sys.argv[1:])
 
 
-def _main_fetch(argv: list[str]) -> int:
-    import logging
-
-    from common.events import DocumentEvent, ErrorEvent, ProgressEvent
-    from scout.config import ScoutConfig, ConfigError
-    from scout.services.fetch import FetchConfig, FetchService
-
-    parser = argparse.ArgumentParser(prog="anvil fetch", description="Fetch raw documents (Scout fetch-only)")
-    parser.add_argument("topic")
-    parser.add_argument(
-        "--source",
-        action="append",
-        required=True,
-        help="Source name (repeatable), e.g. --source hackernews --source reddit",
-    )
-    parser.add_argument("--profile", default="quick", help="Scout profile (quick/standard/deep)")
-    parser.add_argument("--max-documents", type=int, default=100)
-    parser.add_argument("--data-dir", default="data/sessions")
-    parser.add_argument("--deep-comments", default="auto", choices=["auto", "always", "never"])
-    parser.add_argument("-v", "--verbose", action="store_true")
-
-    args = parser.parse_args(argv)
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    source_names: list[str] = []
-    for raw in args.source or []:
-        for part in str(raw).split(","):
-            part = part.strip()
-            if part:
-                source_names.append(part)
-    try:
-        scout_config = ScoutConfig.from_profile(args.profile, sources=source_names)
-        scout_config.validate(sources=source_names)
-    except ConfigError as e:
-        print(f"Error: {e}")
-        return 1
-
-    def on_event(event) -> None:
-        if isinstance(event, ProgressEvent):
-            if event.stage == "fetch":
-                if event.total:
-                    print(f"[{event.current}/{event.total}] {event.message}")
-                else:
-                    print(f"[{event.current}] {event.message}")
-            return
-        if isinstance(event, DocumentEvent):
-            return
-        if isinstance(event, ErrorEvent):
-            print(f"Error: {event.message}", file=sys.stderr)
-
-    service = FetchService(
-        FetchConfig(
-            topic=args.topic,
-            sources=source_names,
-            data_dir=args.data_dir,
-            max_documents=args.max_documents,
-            deep_comments=args.deep_comments,
-        ),
-        on_event=on_event,
-    )
-    result = service.run(scout_config=scout_config)
-
-    print(f"Session: {result.session_id}")
-    print(f"Documents: {result.documents_fetched}")
-    print(f"Duration: {result.duration_seconds:.1f}s")
-    if result.errors:
-        print(f"Errors: {len(result.errors)} (see stderr)")
-    return 0
-
-
-def _main_code(argv: list[str]) -> int:
-    import argparse
-
-    from anvil.services.coding import CodingConfig, CodingService
-
-    parser = argparse.ArgumentParser(prog="anvil code", description="Run a coding task (non-interactive)")
-    parser.add_argument("task")
-    parser.add_argument("files", nargs="*")
-    parser.add_argument("--model", default="gpt-4o")
-    parser.add_argument("--max-iterations", type=int, default=10)
-    args = parser.parse_args(argv)
-
-    root_path = _git_root_or_exit()
-
-    service = CodingService(
-        CodingConfig(
-            root_path=root_path,
-            model=args.model,
-            max_iterations=args.max_iterations,
-            mode="coding",
-        )
-    )
-    result = service.run(prompt=args.task, files=list(args.files))
-    if result.final_response:
-        print(result.final_response)
-    return 0
-
-
-def _main_subcommands(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="anvil", description="Anvil - AI Agent")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    fetch_parser = subparsers.add_parser("fetch", help="Fetch documents from sources")
-    fetch_parser.add_argument("topic")
-    fetch_parser.add_argument("--source", action="append", required=True)
-    fetch_parser.add_argument("--profile", default="quick")
-    fetch_parser.add_argument("--max-documents", type=int, default=100)
-    fetch_parser.add_argument("--data-dir", default="data/sessions")
-    fetch_parser.add_argument("--deep-comments", default="auto", choices=["auto", "always", "never"])
-    fetch_parser.add_argument("-v", "--verbose", action="store_true")
-
-    code_parser = subparsers.add_parser("code", help="Run a coding task (non-interactive)")
-    code_parser.add_argument("task")
-    code_parser.add_argument("files", nargs="*")
-    code_parser.add_argument("--model", default="gpt-4o")
-    code_parser.add_argument("--max-iterations", type=int, default=10)
-
-    need_parser = subparsers.add_parser("need-finding", help="(Stub) Need finding workflow")
-    need_parser.add_argument("topic")
-
-    research_parser = subparsers.add_parser("research", help="(Stub) Research workflow")
-    research_parser.add_argument("query")
-    research_parser.add_argument("--model", default="gpt-4o")
-    research_parser.add_argument("--max-workers", type=int, default=5)
-    research_parser.add_argument("--worker-iterations", type=int, default=6)
-    research_parser.add_argument("--worker-timeout", type=float, default=120.0)
-    research_parser.add_argument("--data-dir", default="data/sessions")
-    research_parser.add_argument("--session-id", default=None)
-    research_parser.add_argument("--output", default=None, help="Write report markdown to this path")
-    research_parser.add_argument("--no-save-artifacts", action="store_true")
-    research_parser.add_argument("--min-citations", type=int, default=3)
-    research_parser.add_argument("--strict-all", action="store_true")
-    research_parser.add_argument("--best-effort", action="store_true")
-
-    coding_parser = subparsers.add_parser("coding", help="(Legacy) Interactive coding mode")
-    coding_parser.add_argument("files", nargs="*")
-
-    gui_parser = subparsers.add_parser("gui", help="Launch Gradio web interface")
-    gui_parser.add_argument("--port", type=int, default=7860)
-    gui_parser.add_argument("--share", action="store_true", help="Create public link")
-
-    args = parser.parse_args(argv)
-
-    if args.command == "fetch":
-        fetch_argv: list[str] = [
-            args.topic,
-            "--profile",
-            args.profile,
-            "--max-documents",
-            str(args.max_documents),
-            "--data-dir",
-            args.data_dir,
-            "--deep-comments",
-            args.deep_comments,
-        ]
-        if args.verbose:
-            fetch_argv.append("--verbose")
-        for src in args.source:
-            fetch_argv.extend(["--source", src])
-        return _main_fetch(fetch_argv)
-
-    if args.command == "code":
-        code_argv: list[str] = [
-            args.task,
-            *list(args.files),
-            "--model",
-            args.model,
-            "--max-iterations",
-            str(args.max_iterations),
-        ]
-        return _main_code(code_argv)
-
-    if args.command in {"need-finding", "research"}:
-        if args.command == "need-finding":
-            print("Not implemented yet. Use `anvil fetch` for now.")
-            return 0
-
-        import os
-
-        missing_key = not bool(os.environ.get("TAVILY_API_KEY"))
-        try:
-            import tavily  # type: ignore[import-not-found]  # noqa: F401
-
-            missing_pkg = False
-        except Exception:
-            missing_pkg = True
-
-        if missing_key or missing_pkg:
-            if missing_pkg:
-                print("Error: `tavily-python` is not installed. Run: `uv sync --extra search`.")
-            if missing_key:
-                print("Error: `TAVILY_API_KEY` is not set (add it to `.env` or export it).")
-            return 2
-
-        from common.events import EventEmitter, ProgressEvent
-        from common.ids import generate_id
-        from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow
-        from anvil.subagents.parallel import ParallelWorkerRunner
-        from anvil.workflows.research_artifacts import make_research_session_dir, utc_ts, write_json, write_text
-        from anvil.workflows.research_persist import persist_research_outcome
-
-        root_path = _git_root_or_exit()
-        runtime = AnvilRuntime(
-            root_path,
-            AgentConfig(model=resolve_model_alias(args.model), stream=False, use_tools=True),
-            mode=get_mode("coding"),
-        )
-
-        def on_event(event) -> None:
-            if isinstance(event, ProgressEvent):
-                msg = event.message or event.stage
-                print(f"[{event.stage}] {msg}")
-
-        workflow = DeepResearchWorkflow(
-            subagent_runner=runtime.subagent_runner,
-            parallel_runner=ParallelWorkerRunner(runtime.subagent_runner),
-            config=DeepResearchConfig(
-                model=resolve_model_alias(args.model),
-                max_workers=args.max_workers,
-                worker_max_iterations=args.worker_iterations,
-                worker_timeout_s=args.worker_timeout,
-                min_total_citations=max(0, int(args.min_citations)),
-                strict_all=bool(args.strict_all),
-                best_effort=bool(args.best_effort),
-            ),
-            emitter=EventEmitter(on_event),
-        )
-        session_id = args.session_id or generate_id()
-        session_dir = make_research_session_dir(data_dir=args.data_dir, session_id=session_id)
-        meta_path = session_dir / "meta.json"
-
-        meta = {
-            "kind": "research",
-            "session_id": session_id,
-            "query": args.query,
-            "model": resolve_model_alias(args.model),
-            "ts_start": utc_ts(),
-            "config": {
-                "max_workers": args.max_workers,
-                "worker_iterations": args.worker_iterations,
-                "worker_timeout": args.worker_timeout,
-                "min_citations": args.min_citations,
-                "strict_all": bool(args.strict_all),
-                "best_effort": bool(args.best_effort),
-            },
-        }
-
-        try:
-            outcome = workflow.run(args.query)
-            meta["ts_end"] = utc_ts()
-            meta["status"] = "completed"
-            meta["citations"] = len(outcome.citations)
-            meta["workers"] = {
-                "total": len(outcome.results),
-                "failed": sum(1 for r in outcome.results if not r.success),
-            }
-
-            paths = persist_research_outcome(
-                data_dir=args.data_dir,
-                session_id=session_id,
-                meta=meta,
-                outcome=outcome,
-                output_path=args.output,
-                save_artifacts=not bool(args.no_save_artifacts),
-            )
-            print(outcome.report_markdown)
-            if not args.output:
-                print(f"\nSaved: {paths['report_path']}")
-                print(f"Session: {session_id}")
-            return 0
-        except Exception as e:
-            meta["ts_end"] = utc_ts()
-            meta["status"] = "failed"
-            meta["error"] = str(e)
-            write_json(meta_path, meta)
-            if not args.no_save_artifacts:
-                write_text(session_dir / "research" / "error.txt", str(e) + "\n")
-            print(f"Error: {e}", file=sys.stderr)
-            if not args.output:
-                print(f"Session: {session_id}", file=sys.stderr)
-                print(f"Artifacts: {session_dir}", file=sys.stderr)
-            return 1
-
-    if args.command == "coding":
-        return _main_legacy(["coding", *list(args.files)])
-
-    if args.command == "gui":
-        return _main_gui(args)
-
-    return 1
-
-
-def _main_gui(args) -> int:
-    try:
-        from anvil.gui import launch
-    except ImportError:
-        print("Gradio not installed. Run: uv pip install 'anvil[gui]'")
-        return 1
-
-    print(f"Launching Anvil GUI on port {args.port}...")
-    launch(server_port=args.port, share=args.share)
-    return 0
+def _utc_ts() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _git_root_or_exit() -> str:
@@ -338,60 +34,166 @@ def _git_root_or_exit() -> str:
         )
         return result.stdout.strip()
     except subprocess.CalledProcessError:
-        print("❌ Error: Not in a git repository")
+        print("Error: Not in a git repository", file=sys.stderr)
         raise SystemExit(1)
 
 
-def _main_legacy(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Anvil - AI Coding Agent with Tools")
-    parser.add_argument(
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="anvil", description="Anvil - AI Agent")
+    subparsers = parser.add_subparsers(dest="command", required=False)
+
+    repl = subparsers.add_parser("repl", help="Start interactive agent REPL")
+    repl.add_argument(
         "--model",
         default="gpt-4o",
         help="Model to use (supports aliases: sonnet, opus, haiku, flash, deepseek)",
     )
-    parser.add_argument("--no-stream", action="store_true", help="Disable streaming")
-    parser.add_argument("--dry-run", action="store_true", help="Don't actually edit files")
-    parser.add_argument("--no-auto-commit", action="store_true", help="Don't auto-commit")
-    parser.add_argument("--no-tools", action="store_true", help="Disable structured tools")
-    parser.add_argument("--no-lint", action="store_true", help="Disable auto-linting after edits")
-    parser.add_argument(
-        "mode_or_file",
-        nargs="?",
-        default=None,
-        help=f"Mode to run (available: {', '.join(list_modes())}); if not a mode, treated as a file",
-    )
-    parser.add_argument("files", nargs="*", help="Files to add to context")
-    parser.add_argument("--message", "-m", help="Single prompt (non-interactive)")
+    repl.add_argument("--no-stream", action="store_true", help="Disable streaming")
+    repl.add_argument("--dry-run", action="store_true", help="Don't actually edit files")
+    repl.add_argument("--no-auto-commit", action="store_true", help="Don't auto-commit")
+    repl.add_argument("--no-tools", action="store_true", help="Disable structured tools")
+    repl.add_argument("--no-lint", action="store_true", help="Disable auto-linting after edits")
+    repl.add_argument("--mode", default="coding", choices=list_modes())
+    repl.add_argument("--message", "-m", help="Single prompt (non-interactive)")
+    repl.add_argument("files", nargs="*", help="Files to add to context")
 
+    code = subparsers.add_parser("code", help="Run a coding task (non-interactive)")
+    code.add_argument("task")
+    code.add_argument("files", nargs="*")
+    code.add_argument("--model", default="gpt-4o")
+    code.add_argument("--max-iterations", type=int, default=10)
+
+    fetch = subparsers.add_parser("fetch", help="Fetch raw documents (Scout fetch-only)")
+    fetch.add_argument("topic", nargs="?", help="Topic to search (required unless --resume)")
+    fetch.add_argument(
+        "--source",
+        action="append",
+        help="Source name (repeatable), e.g. --source hackernews --source reddit",
+    )
+    fetch.add_argument("--profile", default="quick", help="Scout profile (quick/standard/deep)")
+    fetch.add_argument("--max-documents", type=int, default=100)
+    fetch.add_argument("--max-task-pages", type=int, default=3)
+    fetch.add_argument("--data-dir", default="data/sessions")
+    fetch.add_argument("--deep-comments", default="auto", choices=["auto", "always", "never"])
+    fetch.add_argument("--session-id", default=None, help="Explicit session id for a new run")
+    fetch.add_argument("--resume", default=None, help="Resume an existing session id")
+    fetch.add_argument("-v", "--verbose", action="store_true")
+
+    research = subparsers.add_parser("research", help="Deep research (Tavily + orchestrator-workers)")
+    research.add_argument("query", nargs="?", help="Research query (required unless --resume)")
+    research.add_argument("--model", default="gpt-4o")
+    research.add_argument("--max-workers", type=int, default=5, help="Parallel worker concurrency")
+    research.add_argument("--worker-iterations", type=int, default=6)
+    research.add_argument("--worker-timeout", type=float, default=120.0)
+    research.add_argument("--min-citations", type=int, default=3)
+    research.add_argument("--data-dir", default="data/sessions")
+    research.add_argument("--session-id", default=None)
+    research.add_argument("--resume", default=None, help="Resume an existing research session id")
+    research.add_argument("--max-attempts", type=int, default=2, help="Retries for failed workers on resume")
+    research.add_argument("--output", default=None, help="Write report markdown to this path")
+    research.add_argument("--no-save-artifacts", action="store_true")
+    research.add_argument(
+        "--best-effort",
+        action="store_true",
+        help="Allow partial output (not recommended; strict is default)",
+    )
+
+    sessions = subparsers.add_parser("sessions", help="List/open session artifacts")
+    sessions.add_argument("--data-dir", default="data/sessions")
+    sessions_sub = sessions.add_subparsers(dest="sessions_cmd", required=False)
+
+    sessions_list = sessions_sub.add_parser("list", help="List sessions")
+    sessions_list.add_argument("--kind", default=None, choices=["research", "fetch"])
+    sessions_list.add_argument("--limit", type=int, default=20)
+
+    sessions_show = sessions_sub.add_parser("show", help="Show session metadata")
+    sessions_show.add_argument("session_id")
+
+    sessions_open = sessions_sub.add_parser("open", help="Open research report")
+    sessions_open.add_argument("session_id")
+
+    sessions_dir = sessions_sub.add_parser("dir", help="Print session directory")
+    sessions_dir.add_argument("session_id")
+
+    gui = subparsers.add_parser("gui", help="Launch Gradio web interface")
+    gui.add_argument("--port", type=int, default=7860)
+    gui.add_argument("--share", action="store_true", help="Create public link")
+
+    return parser
+
+
+def _main(argv: list[str]) -> int:
+    if not argv:
+        return _cmd_repl(
+            model="gpt-4o",
+            mode="coding",
+            files=[],
+            message=None,
+            no_stream=False,
+            dry_run=False,
+            no_auto_commit=False,
+            no_tools=False,
+            no_lint=False,
+        )
+
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
+    cmd = args.command or "repl"
+    if cmd == "repl":
+        return _cmd_repl(
+            model=args.model,
+            mode=args.mode,
+            files=list(args.files),
+            message=args.message,
+            no_stream=bool(args.no_stream),
+            dry_run=bool(args.dry_run),
+            no_auto_commit=bool(args.no_auto_commit),
+            no_tools=bool(args.no_tools),
+            no_lint=bool(args.no_lint),
+        )
+    if cmd == "code":
+        return _cmd_code(args)
+    if cmd == "fetch":
+        return _cmd_fetch(args)
+    if cmd == "research":
+        return _cmd_research(args)
+    if cmd == "sessions":
+        return _cmd_sessions(args)
+    if cmd == "gui":
+        return _cmd_gui(args)
+
+    parser.print_help(sys.stderr)
+    return 2
+
+
+def _cmd_repl(
+    *,
+    model: str,
+    mode: str,
+    files: list[str],
+    message: str | None,
+    no_stream: bool,
+    dry_run: bool,
+    no_auto_commit: bool,
+    no_tools: bool,
+    no_lint: bool,
+) -> int:
     config = AgentConfig(
-        model=resolve_model_alias(args.model),
-        stream=not args.no_stream,
-        dry_run=args.dry_run,
-        auto_commit=not args.no_auto_commit,
-        use_tools=not args.no_tools,
-        auto_lint=not args.no_lint,
+        model=resolve_model_alias(model),
+        stream=not no_stream,
+        dry_run=bool(dry_run),
+        auto_commit=not bool(no_auto_commit),
+        use_tools=not bool(no_tools),
+        auto_lint=not bool(no_lint),
     )
-
     root_path = _git_root_or_exit()
-
-    mode_name = args.mode_or_file
-    files = list(args.files)
-    if mode_name is None:
-        mode_name = "coding"
-    elif mode_name not in list_modes():
-        files = [mode_name] + files
-        mode_name = "coding"
-
-    mode_config = get_mode(mode_name)
-    runtime = AnvilRuntime(root_path, config, mode=mode_config)
-
+    runtime = AnvilRuntime(root_path, config, mode=get_mode(mode))
     for filepath in files:
         runtime.add_file_to_context(filepath)
 
-    if args.message:
-        print(runtime.run_prompt(args.message, files=[]))
+    if message:
+        print(runtime.run_prompt(message, files=[]))
         return 0
 
     repl = AnvilREPL(runtime)
@@ -399,5 +201,356 @@ def _main_legacy(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_code(args) -> int:
+    from anvil.services.coding import CodingConfig, CodingService
+
+    root_path = _git_root_or_exit()
+    service = CodingService(
+        CodingConfig(
+            root_path=root_path,
+            model=resolve_model_alias(args.model),
+            max_iterations=int(args.max_iterations),
+            mode="coding",
+        )
+    )
+    result = service.run(prompt=args.task, files=list(args.files))
+    if result.final_response:
+        print(result.final_response)
+    return 0
+
+
+def _cmd_fetch(args) -> int:
+    from anvil.sessions.meta import load_meta, write_meta
+    from common.events import DocumentEvent, ErrorEvent, ProgressEvent
+    from scout.config import ScoutConfig, ConfigError
+    from scout.services.fetch import FetchConfig, FetchService
+    from scout.session import SessionManager
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    data_dir = str(args.data_dir)
+    resume_id = (args.resume or "").strip() or None
+    session_id = (args.session_id or "").strip() or None
+    topic = (args.topic or "").strip()
+
+    if resume_id:
+        session_id = resume_id
+        session = SessionManager(data_dir).load_session(resume_id)
+        if session is None:
+            print(f"Error: Session {resume_id} not found", file=sys.stderr)
+            return 1
+        if not topic:
+            topic = session.topic
+
+    if not topic:
+        print("Error: topic is required (or use `anvil fetch --resume <session_id>`)", file=sys.stderr)
+        return 2
+
+    source_names: list[str] = []
+    for raw in args.source or []:
+        for part in str(raw).split(","):
+            part = part.strip()
+            if part:
+                source_names.append(part)
+
+    if resume_id and not source_names:
+        session = SessionManager(data_dir).load_session(resume_id)
+        if session:
+            source_names = sorted({t.source for t in session.task_queue})
+
+    if not source_names:
+        print("Error: at least one `--source` is required", file=sys.stderr)
+        return 2
+
+    try:
+        scout_config = ScoutConfig.from_profile(args.profile, sources=source_names)
+        scout_config.validate(sources=source_names)
+    except ConfigError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    def on_event(event) -> None:
+        if isinstance(event, ProgressEvent) and event.stage == "fetch":
+            if event.total:
+                print(f"[fetch] [{event.current}/{event.total}] {event.message}")
+            else:
+                print(f"[fetch] [{event.current}] {event.message}")
+        elif isinstance(event, ErrorEvent):
+            print(f"Error: {event.message}", file=sys.stderr)
+        elif isinstance(event, DocumentEvent):
+            pass
+
+    start_meta = load_meta(data_dir=data_dir, session_id=session_id) if session_id else None
+    meta = dict(start_meta or {})
+    meta.update(
+        {
+            "kind": "fetch",
+            "session_id": session_id,
+            "topic": topic,
+            "status": "running",
+            "updated_at": _utc_ts(),
+            "created_at": meta.get("created_at") or _utc_ts(),
+            "config": {
+                "sources": source_names,
+                "max_documents": int(args.max_documents),
+                "max_task_pages": int(args.max_task_pages),
+                "deep_comments": args.deep_comments,
+                "profile": args.profile,
+                "resume": bool(resume_id),
+            },
+        }
+    )
+    if session_id:
+        write_meta(data_dir=data_dir, session_id=session_id, meta=meta)
+
+    service = FetchService(
+        FetchConfig(
+            topic=topic,
+            sources=source_names,
+            data_dir=data_dir,
+            max_documents=int(args.max_documents),
+            max_task_pages=int(args.max_task_pages),
+            deep_comments=args.deep_comments,
+            session_id=session_id,
+            resume=bool(resume_id),
+        ),
+        on_event=on_event,
+    )
+    result = service.run(scout_config=scout_config)
+
+    if result.session_id:
+        meta["session_id"] = result.session_id
+        meta["status"] = "completed" if not result.errors else "completed_with_errors"
+        meta["updated_at"] = _utc_ts()
+        meta["documents_fetched"] = int(result.documents_fetched)
+        write_meta(data_dir=data_dir, session_id=result.session_id, meta=meta)
+
+    print(f"Session: {result.session_id}")
+    print(f"Documents: {result.documents_fetched}")
+    print(f"Duration: {result.duration_seconds:.1f}s")
+    if result.errors:
+        print(f"Errors: {len(result.errors)}", file=sys.stderr)
+    return 0
+
+
+def _cmd_research(args) -> int:
+    import os
+
+    query = (args.query or "").strip()
+    resume_id = (args.resume or "").strip() or None
+    if not query and not resume_id:
+        print("Error: query is required (or use `anvil research --resume <session_id>`)", file=sys.stderr)
+        return 2
+
+    missing_key = not bool(os.environ.get("TAVILY_API_KEY"))
+    try:
+        import tavily  # type: ignore[import-not-found]  # noqa: F401
+
+        missing_pkg = False
+    except Exception:
+        missing_pkg = True
+
+    if missing_key or missing_pkg:
+        if missing_pkg:
+            print("Error: `tavily-python` is not installed. Run: `uv sync --extra search`.", file=sys.stderr)
+        if missing_key:
+            print("Error: `TAVILY_API_KEY` is not set (add it to `.env` or export it).", file=sys.stderr)
+        return 2
+
+    from anvil.sessions.meta import load_meta, write_meta
+    from anvil.subagents.parallel import ParallelWorkerRunner
+    from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow
+    from anvil.workflows.deep_research_resume import resume_deep_research
+    from anvil.workflows.research_artifacts import make_research_session_dir, write_json, write_text
+    from anvil.workflows.research_persist import persist_research_outcome
+    from common.events import EventEmitter, ProgressEvent
+    from common.ids import generate_id
+
+    root_path = _git_root_or_exit()
+    runtime = AnvilRuntime(
+        root_path,
+        AgentConfig(model=resolve_model_alias(args.model), stream=False, use_tools=True),
+        mode=get_mode("coding"),
+    )
+
+    def on_event(event) -> None:
+        if isinstance(event, ProgressEvent):
+            msg = event.message or event.stage
+            print(f"[{event.stage}] {msg}", file=sys.stderr)
+
+    workflow = DeepResearchWorkflow(
+        subagent_runner=runtime.subagent_runner,
+        parallel_runner=ParallelWorkerRunner(runtime.subagent_runner),
+        config=DeepResearchConfig(
+            model=resolve_model_alias(args.model),
+            max_workers=int(args.max_workers),
+            worker_max_iterations=int(args.worker_iterations),
+            worker_timeout_s=float(args.worker_timeout),
+            min_total_citations=max(0, int(args.min_citations)),
+            strict_all=True,
+            best_effort=bool(args.best_effort),
+        ),
+        emitter=EventEmitter(on_event),
+    )
+
+    session_id = (args.session_id or "").strip() or generate_id()
+    if resume_id:
+        session_id = resume_id
+    session_dir = make_research_session_dir(data_dir=args.data_dir, session_id=session_id)
+    meta_path = session_dir / "meta.json"
+
+    existing_meta = load_meta(data_dir=args.data_dir, session_id=session_id) if resume_id else None
+    if resume_id and not query:
+        query = str((existing_meta or {}).get("query") or "").strip()
+        if not query:
+            print(
+                f"Error: missing query; provide it explicitly or ensure `{meta_path}` contains `query`",
+                file=sys.stderr,
+            )
+            return 2
+
+    meta = dict(existing_meta or {})
+    meta.update(
+        {
+            "kind": "research",
+            "session_id": session_id,
+            "query": query,
+            "model": resolve_model_alias(args.model),
+            "status": "running",
+            "config": {
+                "max_workers": int(args.max_workers),
+                "worker_iterations": int(args.worker_iterations),
+                "worker_timeout": float(args.worker_timeout),
+                "min_citations": int(args.min_citations),
+                "best_effort": bool(args.best_effort),
+                "resume": bool(resume_id),
+                "max_attempts": int(args.max_attempts),
+            },
+        }
+    )
+    write_meta(data_dir=args.data_dir, session_id=session_id, meta=meta)
+
+    try:
+        if resume_id:
+            outcome = resume_deep_research(
+                workflow=workflow,
+                data_dir=args.data_dir,
+                session_id=session_id,
+                query=query,
+                max_attempts=int(args.max_attempts),
+            )
+        else:
+            outcome = workflow.run(query)
+
+        failures = [r for r in outcome.results if not r.success]
+        print(
+            f"[diagnostics] tasks={len(outcome.results)} failed={len(failures)} citations={len(outcome.citations)}",
+            file=sys.stderr,
+        )
+        for r in outcome.results:
+            print(
+                f"[diagnostics] {r.task_id}: success={r.success} web_search_calls={r.web_search_calls} citations={len(r.citations)} error={r.error or ''}".rstrip(),
+                file=sys.stderr,
+            )
+
+        meta["status"] = "completed"
+        meta["citations"] = len(outcome.citations)
+        meta["workers"] = {"total": len(outcome.results), "failed": len(failures)}
+
+        paths = persist_research_outcome(
+            data_dir=args.data_dir,
+            session_id=session_id,
+            meta=meta,
+            outcome=outcome,
+            output_path=args.output,
+            save_artifacts=not bool(args.no_save_artifacts),
+        )
+        write_meta(data_dir=args.data_dir, session_id=session_id, meta=meta)
+
+        print(outcome.report_markdown)
+        if not args.output:
+            print(f"\nSaved: {paths['report_path']}", file=sys.stderr)
+            print(f"Session: {session_id}", file=sys.stderr)
+        return 0
+    except Exception as e:
+        meta["status"] = "failed"
+        meta["updated_at"] = _utc_ts()
+        meta["error"] = str(e)
+        write_json(meta_path, meta)
+        if not args.no_save_artifacts:
+            write_text(session_dir / "research" / "error.txt", str(e) + "\n")
+        print(f"Error: {e}", file=sys.stderr)
+        print(f"Session: {session_id}", file=sys.stderr)
+        print(f"Artifacts: {session_dir}", file=sys.stderr)
+        return 1
+
+
+def _cmd_sessions(args) -> int:
+    from anvil.sessions.meta import list_sessions, load_meta
+
+    data_dir = args.data_dir
+    sub = args.sessions_cmd or "list"
+
+    if sub == "list":
+        rows = list_sessions(data_dir=data_dir, kind=args.kind)
+        rows = rows[: max(0, int(args.limit))]
+        if not rows:
+            print("No sessions found.")
+            return 0
+        print(f"{'ID':<10} {'Kind':<10} {'Status':<22} {'Updated':<20} {'Summary'}")
+        for m in rows:
+            sid = str(m.get("session_id") or "")[:10]
+            kind = str(m.get("kind") or "")
+            status = str(m.get("status") or "")
+            updated = str(m.get("updated_at") or m.get("created_at") or "")
+            summary = str(m.get("query") or m.get("topic") or "")[:60]
+            print(f"{sid:<10} {kind:<10} {status:<22} {updated:<20} {summary}")
+        return 0
+
+    if sub == "dir":
+        print(Path(data_dir) / args.session_id)
+        return 0
+
+    meta = load_meta(data_dir=data_dir, session_id=args.session_id) or {}
+    if sub == "show":
+        import json
+
+        print(json.dumps(meta, indent=2, ensure_ascii=False))
+        return 0
+
+    if sub == "open":
+        report = Path(data_dir) / args.session_id / "research" / "report.md"
+        if not report.exists():
+            print(f"Report not found: {report}", file=sys.stderr)
+            return 1
+        opener = None
+        if sys.platform == "darwin":
+            opener = ["open", str(report)]
+        elif sys.platform.startswith("win"):
+            opener = ["cmd", "/c", "start", str(report)]
+        else:
+            opener = ["xdg-open", str(report)]
+        subprocess.run(opener, check=False)
+        return 0
+
+    return 2
+
+
+def _cmd_gui(args) -> int:
+    try:
+        from anvil.gui import launch
+    except ImportError:
+        print("Gradio not installed. Run: `uv sync --extra gui`.", file=sys.stderr)
+        return 1
+
+    print(f"Launching Anvil GUI on port {args.port}...")
+    launch(server_port=args.port, share=args.share)
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -19,7 +19,7 @@ class DeepResearchConfig:
     worker_timeout_s: float = 120.0
     require_citations: bool = True
     min_total_citations: int = 3
-    strict_all: bool = False
+    strict_all: bool = True
     best_effort: bool = False
 
 

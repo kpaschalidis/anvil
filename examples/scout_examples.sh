@@ -1,145 +1,23 @@
 #!/usr/bin/env bash
-#
-# Scout Agent - Example Commands
-#
-# Make executable: chmod +x examples/scout_examples.sh
-# Run: ./examples/scout_examples.sh
+set -euo pipefail
 
-set -e
+echo "Install fetch-source dependencies:"
+echo "  uv sync --extra scout"
+echo
+echo "Fetch examples (writes to data/sessions/<id>/):"
+echo "  uv run anvil fetch \"AI note taking\" --source producthunt --max-documents 50"
+echo "  uv run anvil fetch \"insurance broker\" --source hackernews --source reddit --max-documents 100"
+echo "  uv run anvil fetch \"kubernetes installation problems\" --source github_issues --max-documents 100"
+echo
+echo "Resume fetch:"
+echo "  uv run anvil fetch --resume <session_id>"
+echo
+echo "Sessions:"
+echo "  uv run anvil sessions list --kind fetch"
+echo "  uv run anvil sessions dir <session_id>"
+echo
+echo "Deep research (web search):"
+echo "  uv sync --extra search"
+echo "  export TAVILY_API_KEY=tvly-..."
+echo "  uv run anvil research \"competitive analysis of AI coding agents\""
 
-echo "🔍 Scout Agent - Example Usage"
-echo "=============================="
-echo ""
-
-# Check if API key is set
-if [ -z "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
-    echo "❌ Error: No LLM API key found"
-    echo ""
-    echo "Please set one of:"
-    echo "  export OPENAI_API_KEY='sk-...'"
-    echo "  export ANTHROPIC_API_KEY='sk-ant-...'"
-    echo ""
-    echo "Or copy .env.example to .env and fill in your keys"
-    exit 1
-fi
-
-echo "✅ API key detected"
-echo ""
-
-# Function to run example
-run_example() {
-    local num=$1
-    local desc=$2
-    shift 2
-    local cmd="$@"
-    
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Example $num: $desc"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Command:"
-    echo "  $cmd"
-    echo ""
-    read -p "Run this example? [y/N] " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        eval "$cmd"
-        echo ""
-        echo "✅ Example $num completed"
-    else
-        echo "⏭️  Skipped"
-    fi
-    echo ""
-}
-
-# Example 1: Quick validation
-run_example 1 \
-    "Quick Research (5-10 min, ~\$0.10)" \
-    "uv run scout run 'CRM software pain points' --profile quick"
-
-# Example 2: Standard research
-run_example 2 \
-    "Standard Research (15-30 min, ~\$0.50)" \
-    "uv run scout run 'project management tools' --profile standard --max-cost 1.0"
-
-# Example 3: List sessions
-run_example 3 \
-    "List All Sessions" \
-    "uv run scout list"
-
-# Example 4: View stats
-if uv run scout list | grep -q "completed"; then
-    SESSION_ID=$(uv run scout list | grep "completed" | head -1 | awk '{print $1}')
-    run_example 4 \
-        "View Session Statistics" \
-        "uv run scout stats $SESSION_ID"
-    
-    # Example 5: Export data
-    run_example 5 \
-        "Export to CSV" \
-        "uv run scout export $SESSION_ID --format csv --output /tmp/scout_export.csv && cat /tmp/scout_export.csv | head -20"
-else
-    echo "ℹ️  Examples 4-5 require a completed session. Run Examples 1 or 2 first."
-fi
-
-# Example 6: Watch live (if there's a running session)
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Example 6: Watch Live Progress"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "To watch a session live, open two terminals:"
-echo ""
-echo "  Terminal 1: uv run scout run 'your topic' --profile standard"
-echo "  Terminal 2: uv run scout watch <session_id> --stream snippets"
-echo ""
-
-# Example 7: Advanced CLI flags
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Example 7: Advanced CLI Flags"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "Performance & Scaling:"
-echo "  --workers 10              # More parallel workers"
-echo "  --deep-comments always    # Always fetch deep comment threads"
-echo "  --deep-comments never     # Skip comments (faster, cheaper)"
-echo ""
-echo "Content Filtering:"
-echo "  --min-content-length 200  # Skip short posts"
-echo "  --min-score 15            # Skip low-scoring posts"
-echo ""
-echo "LLM Configuration:"
-echo "  --extraction-model gpt-4o-mini   # Use cheaper model"
-echo "  --extraction-prompt v2           # Better prompt with examples"
-echo ""
-echo "Example: Fast & Cheap Research"
-echo "  uv run scout run 'topic' \\"
-echo "    --extraction-model gpt-4o-mini \\"
-echo "    --workers 10 \\"
-echo "    --deep-comments never \\"
-echo "    --min-content-length 200 \\"
-echo "    --min-score 10 \\"
-echo "    --max-cost 0.25"
-echo ""
-echo "Example: High Quality Research"
-echo "  uv run scout run 'topic' \\"
-echo "    --extraction-model gpt-4o \\"
-echo "    --extraction-prompt v2 \\"
-echo "    --deep-comments always \\"
-echo "    --min-content-length 50 \\"
-echo "    --profile deep"
-echo ""
-echo "Session Management:"
-echo "  uv run scout tag <session_id> --tags 'tag1,tag2,tag3'"
-echo "  uv run scout clone <session_id> --topic 'new related topic'"
-echo "  uv run scout archive --days 30"
-echo ""
-echo "Logging:"
-echo "  uv run scout run 'topic' --log-format json > research.log"
-echo ""
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "✨ Examples complete!"
-echo ""
-echo "📚 For more information:"
-echo "  - Read: SCOUT_QUICKSTART.md"
-echo "  - Help: uv run scout --help"
-echo "  - Docs: src/scout/README.md"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

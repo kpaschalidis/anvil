@@ -5,7 +5,8 @@ from dataclasses import dataclass
 
 from common.events import DocumentEvent, ErrorEvent, EventCallback, EventEmitter, ProgressEvent
 from scout.config import ScoutConfig
-from scout.models import RawDocument, SearchTask, generate_id
+from scout.models import RawDocument, SearchTask, SessionState, generate_id, utc_now
+from scout.session import SessionManager, SessionError
 from scout.sources.registry import load_source_classes
 from scout.storage import Storage
 
@@ -18,6 +19,8 @@ class FetchConfig:
     max_documents: int = 100
     deep_comments: str = "auto"
     session_id: str | None = None
+    resume: bool = False
+    max_task_pages: int = 25
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,14 +83,17 @@ class FetchService:
         errors: list[str] = []
 
         topic = (self.config.topic or "").strip()
-        if not topic:
-            raise ValueError("topic is required")
+        if not topic and not self.config.resume:
+            raise ValueError("topic is required (or pass resume=True)")
 
         source_names = [s.strip() for s in (self.config.sources or []) if s.strip()]
         if not source_names:
             raise ValueError("at least one source is required")
 
-        session_id = self.config.session_id or generate_id()
+        session = self._load_or_create_session(topic=topic)
+        session_id = session.session_id
+        if not topic:
+            topic = session.topic
 
         if sources is None:
             if scout_config is None:
@@ -102,38 +108,45 @@ class FetchService:
 
         storage = Storage(session_id, self.config.data_dir)
         try:
-            seen_doc_ids: set[str] = set()
-            docs_fetched_ref: list[int] = [0]
+            seen_doc_ids: set[str] = set(session.visited_docs)
+            docs_fetched_ref: list[int] = [int(session.stats.docs_collected or 0)]
 
             self.emitter.emit(
                 ProgressEvent(stage="start", current=0, total=None, message="Starting fetch")
             )
 
-            queries = _default_queries(topic)
+            if not session.task_queue:
+                queries = _default_queries(topic)
+                for source in sources:
+                    try:
+                        tasks = source.adapt_queries(queries, topic)
+                        for t in tasks:
+                            t.budget = max(1, min(int(t.budget), int(self.config.max_task_pages)))
+                        session.task_queue.extend(tasks)
+                    except Exception as e:
+                        msg = f"{source.name}: failed to adapt queries: {e}"
+                        errors.append(msg)
+                        self.emitter.emit(ErrorEvent(message=msg, source=source.name))
+                session.stats.tasks_remaining = len(session.task_queue)
+                self._save_session(session)
 
-            for source in sources:
-                if docs_fetched_ref[0] >= self.config.max_documents:
-                    break
-
-                try:
-                    tasks = source.adapt_queries(queries, topic)
-                except Exception as e:
-                    msg = f"{source.name}: failed to adapt queries: {e}"
-                    errors.append(msg)
-                    self.emitter.emit(ErrorEvent(message=msg, source=source.name))
+            sources_by_name = {s.name: s for s in sources}
+            while session.task_queue and docs_fetched_ref[0] < self.config.max_documents:
+                task = session.task_queue.pop(0)
+                source = sources_by_name.get(task.source)
+                if source is None:
                     continue
-
-                for task in tasks:
-                    if docs_fetched_ref[0] >= self.config.max_documents:
-                        break
-                    self._run_task(
-                        source=source,
-                        task=task,
-                        storage=storage,
-                        seen_doc_ids=seen_doc_ids,
-                        docs_fetched_ref=docs_fetched_ref,
-                        errors=errors,
-                    )
+                self._run_task_page(
+                    source=source,
+                    task=task,
+                    session=session,
+                    storage=storage,
+                    seen_doc_ids=seen_doc_ids,
+                    docs_fetched_ref=docs_fetched_ref,
+                    errors=errors,
+                )
+                session.stats.tasks_remaining = len(session.task_queue)
+                self._save_session(session)
 
             duration = time.time() - started
             self.emitter.emit(
@@ -145,6 +158,10 @@ class FetchService:
                 )
             )
 
+            session.status = "completed"
+            session.stats.docs_collected = docs_fetched_ref[0]
+            self._save_session(session)
+
             return FetchResult(
                 session_id=session_id,
                 documents_fetched=docs_fetched_ref[0],
@@ -154,63 +171,108 @@ class FetchService:
         finally:
             storage.close()
 
-    def _run_task(
+    def _run_task_page(
         self,
         *,
         source,
         task: SearchTask,
+        session: SessionState,
         storage: Storage,
         seen_doc_ids: set[str],
         docs_fetched_ref: list[int],
         errors: list[str],
     ) -> None:
-        cursor_task = task
-        while docs_fetched_ref[0] < self.config.max_documents:
+        if task.budget < 1:
+            task.budget = max(1, int(self.config.max_task_pages))
+
+        if task.task_id not in session.visited_tasks:
+            session.visited_tasks.append(task.task_id)
+
+        try:
+            page = source.search(task)
+            session.stats.iterations += 1
+        except Exception as e:
+            msg = f"{source.name}: search failed: {e}"
+            errors.append(msg)
+            self.emitter.emit(ErrorEvent(message=msg, source=source.name))
+            session.stats.tasks_completed += 1
+            return
+
+        for ref in page.items:
+            if docs_fetched_ref[0] >= self.config.max_documents:
+                break
+            if ref.ref_id in seen_doc_ids:
+                continue
+
             try:
-                page = source.search(cursor_task)
+                doc: RawDocument = source.fetch(ref, deep_comments=self.config.deep_comments)
             except Exception as e:
-                msg = f"{source.name}: search failed: {e}"
+                msg = f"{source.name}: fetch failed for {ref.ref_id}: {e}"
                 errors.append(msg)
                 self.emitter.emit(ErrorEvent(message=msg, source=source.name))
-                return
-
-            for ref in page.items:
-                if docs_fetched_ref[0] >= self.config.max_documents:
-                    return
-                if ref.ref_id in seen_doc_ids:
-                    continue
-
-                try:
-                    doc: RawDocument = source.fetch(ref, deep_comments=self.config.deep_comments)
-                except Exception as e:
-                    msg = f"{source.name}: fetch failed for {ref.ref_id}: {e}"
-                    errors.append(msg)
-                    self.emitter.emit(ErrorEvent(message=msg, source=source.name))
-                    seen_doc_ids.add(ref.ref_id)
-                    continue
-
-                try:
-                    storage.save_document(doc)
-                except Exception as e:
-                    msg = f"{source.name}: storage failed for {ref.ref_id}: {e}"
-                    errors.append(msg)
-                    self.emitter.emit(ErrorEvent(message=msg, source=source.name))
-                    seen_doc_ids.add(ref.ref_id)
-                    continue
-
                 seen_doc_ids.add(ref.ref_id)
-                docs_fetched_ref[0] += 1
-                self.emitter.emit(DocumentEvent(doc_id=doc.doc_id, title=doc.title, source=source.name))
-                self.emitter.emit(
-                    ProgressEvent(
-                        stage="fetch",
-                        current=docs_fetched_ref[0],
-                        total=self.config.max_documents,
-                        message=f"{source.name}: {doc.title}",
-                    )
+                session.visited_docs.append(ref.ref_id)
+                continue
+
+            try:
+                storage.save_document(doc)
+            except Exception as e:
+                msg = f"{source.name}: storage failed for {ref.ref_id}: {e}"
+                errors.append(msg)
+                self.emitter.emit(ErrorEvent(message=msg, source=source.name))
+                seen_doc_ids.add(ref.ref_id)
+                session.visited_docs.append(ref.ref_id)
+                continue
+
+            seen_doc_ids.add(ref.ref_id)
+            session.visited_docs.append(ref.ref_id)
+            docs_fetched_ref[0] += 1
+            session.stats.docs_collected = docs_fetched_ref[0]
+            self._save_session(session)
+
+            self.emitter.emit(
+                DocumentEvent(doc_id=doc.doc_id, title=doc.title, source=source.name)
+            )
+            self.emitter.emit(
+                ProgressEvent(
+                    stage="fetch",
+                    current=docs_fetched_ref[0],
+                    total=self.config.max_documents,
+                    message=f"{source.name}: {doc.title}",
                 )
+            )
 
-            if page.exhausted or not page.next_cursor:
-                return
+        session.stats.tasks_completed += 1
 
-            cursor_task = SearchTask(**{**task.model_dump(), "cursor": page.next_cursor})
+        if (not page.exhausted) and page.next_cursor and (task.budget > 1):
+            next_task = SearchTask(**{**task.model_dump(), "cursor": page.next_cursor, "budget": task.budget - 1})
+            session.task_queue.append(next_task)
+
+    def _load_or_create_session(self, *, topic: str) -> SessionState:
+        manager = SessionManager(self.config.data_dir)
+        if self.config.resume:
+            if not self.config.session_id:
+                raise SessionError("resume requires session_id")
+            session = manager.load_session(self.config.session_id)
+            if session is None:
+                raise SessionError(f"Session {self.config.session_id} not found")
+            session.status = "running"
+            return session
+
+        if self.config.session_id:
+            session = SessionState(
+                session_id=self.config.session_id,
+                topic=topic,
+                status="running",
+                max_iterations=10_000,
+                created_at=utc_now(),
+                updated_at=utc_now(),
+            )
+            manager.save_session(session)
+            return session
+
+        session = manager.create_session(topic, max_iterations=10_000)
+        return session
+
+    def _save_session(self, session: SessionState) -> None:
+        SessionManager(self.config.data_dir).save_session(session)

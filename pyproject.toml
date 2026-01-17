@@ -30,7 +30,6 @@ search = [
 
 [project.scripts]
 anvil = "anvil.cli:main"
-scout = "scout.cli:main"
 
 [project.entry-points."scout.sources"]
 hackernews = "scout.sources.hackernews:HackerNewsSource"
