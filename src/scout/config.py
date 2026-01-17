@@ -23,6 +23,28 @@ def get_optional_env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def get_optional_bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    raw = raw.strip().lower()
+    if raw in ("1", "true", "yes", "y", "on"):
+        return True
+    if raw in ("0", "false", "no", "n", "off"):
+        return False
+    return default
+
+
+def get_optional_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except Exception:
+        return default
+
+
 @dataclass
 class RedditConfig:
     client_id: str = field(default_factory=lambda: get_required_env("REDDIT_CLIENT_ID"))
@@ -43,6 +65,39 @@ class HackerNewsConfig:
     max_comments_per_story: int = 100
     comment_depth_limit: int = 5
     hits_per_page: int = 100
+
+
+@dataclass
+class ProductHuntConfig:
+    rate_limit_per_minute: int = 30
+    request_delay_seconds: float = 0.5
+    results_per_search: int = 20
+    headless: bool = field(
+        default_factory=lambda: get_optional_bool_env("SCOUT_PRODUCTHUNT_HEADLESS", False)
+    )
+    navigation_timeout_ms: int = field(
+        default_factory=lambda: get_optional_int_env(
+            "SCOUT_PRODUCTHUNT_NAV_TIMEOUT_MS", 30_000
+        )
+    )
+    user_data_dir: str = field(
+        default_factory=lambda: os.environ.get(
+            "SCOUT_PRODUCTHUNT_USER_DATA_DIR", ".anvil/producthunt_profile"
+        )
+    )
+    channel: str | None = field(
+        default_factory=lambda: os.environ.get("SCOUT_PRODUCTHUNT_CHANNEL")
+    )
+
+
+@dataclass
+class GitHubIssuesConfig:
+    token: str | None = field(
+        default_factory=lambda: os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    )
+    rate_limit_per_minute: int = 20
+    request_delay_seconds: float = 0.25
+    results_per_page: int = 50
 
 
 @dataclass
@@ -76,6 +131,8 @@ class ScoutConfig:
     )
     reddit: RedditConfig | None = None
     hackernews: HackerNewsConfig = field(default_factory=HackerNewsConfig)
+    producthunt: ProductHuntConfig = field(default_factory=ProductHuntConfig)
+    github_issues: GitHubIssuesConfig = field(default_factory=GitHubIssuesConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
 
     @classmethod

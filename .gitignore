@@ -42,4 +42,5 @@ htmlcov/
 data/
 transcripts/
 local-only/
-.anvil/sessions
+.anvil/sessions/
+.anvil/producthunt_profile*/

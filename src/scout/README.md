@@ -8,12 +8,14 @@ Research agent that collects pain points from online sources.
 |--------|---------------|--------|
 | **Hacker News** | None | ✅ Ready |
 | Reddit | API approval needed | ⚠️ Requires approval |
+| **Product Hunt** | None (Playwright) | ✅ Ready |
+| **GitHub Issues** | Optional token | ✅ Ready |
 
 ## Setup
 
 ```bash
 # Install with scout extras
-uv pip install -e ".[scout]"
+uv sync --extra scout
 
 # Set LLM API key (one of these)
 export OPENAI_API_KEY="your_key"
@@ -26,6 +28,23 @@ export ANTHROPIC_API_KEY="your_key"
 ```bash
 # Run research with Hacker News (default, no auth needed)
 uv run scout run "CRM pain points"
+
+# Dump raw documents only (no LLM)
+uv run scout dump "AI note taking" --source producthunt
+
+# If this is your first time using Playwright:
+uv run playwright install chromium
+
+# If Product Hunt blocks headless browsing, run headful (default):
+# export SCOUT_PRODUCTHUNT_HEADLESS=0
+#
+# You can also tune:
+# export SCOUT_PRODUCTHUNT_NAV_TIMEOUT_MS=30000
+# export SCOUT_PRODUCTHUNT_USER_DATA_DIR=".anvil/producthunt_profile"
+# export SCOUT_PRODUCTHUNT_CHANNEL="chrome"  # optional (uses installed Chrome if available)
+
+# Or stream raw JSONL to stdout
+uv run scout dump "AI note taking" --source producthunt --output - > raw.jsonl
 
 # Specify source explicitly
 uv run scout run "insurance software problems" --source hackernews
@@ -62,8 +81,10 @@ Sessions stored in `data/sessions/<session_id>/`:
 | `OPENAI_API_KEY` | Yes* | - | OpenAI API key for extraction |
 | `ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key (alternative) |
 | `SCOUT_DATA_DIR` | No | `data/sessions` | Data directory |
+| `GITHUB_TOKEN` | No | - | GitHub token for higher rate limits |
+| `GH_TOKEN` | No | - | Alternative GitHub token env var |
 
-*One LLM API key required for extraction.
+*One LLM API key required for extraction. `scout dump` does not use an LLM.
 
 ## Reddit (if approved)
 

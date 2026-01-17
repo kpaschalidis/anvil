@@ -8,6 +8,7 @@ dependencies = [
     "litellm>=1.0",
     "pydantic>=2.0",
     "python-dotenv>=1.0",
+    "httpx>=0.27",
     "PyYAML>=6.0",
 ]
 
@@ -18,6 +19,7 @@ dev = [
 ]
 scout = [
     "praw>=7.0",
+    "playwright>=1.41",
 ]
 
 [project.scripts]
@@ -27,6 +29,8 @@ scout = "scout.cli:main"
 [project.entry-points."scout.sources"]
 hackernews = "scout.sources.hackernews:HackerNewsSource"
 reddit = "scout.sources.reddit:RedditSource"
+producthunt = "scout.sources.producthunt:ProductHuntSource"
+github_issues = "scout.sources.github_issues:GitHubIssuesSource"
 
 [build-system]
 requires = ["hatchling"]
