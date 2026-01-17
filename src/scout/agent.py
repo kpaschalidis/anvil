@@ -43,11 +43,13 @@ class IngestionAgent:
         sources: list[Source],
         config: ScoutConfig,
         *,
+        llm_enabled: bool = True,
         on_progress: Callable[[ProgressInfo], None] | None = None,
     ):
         self.session = session
         self.sources = {s.name: s for s in sources}
         self.config = config
+        self.llm_enabled = llm_enabled
         self.on_progress = on_progress
         self.cost_tracker = CostTracker()
         self.storage = Storage(session.session_id, config.data_dir)
@@ -65,7 +67,14 @@ class IngestionAgent:
             content_filter=self.content_filter,
             extractor=self.extractor,
         )
-        self.parallel_executor = ParallelExecutor(max_workers=config.parallel_workers)
+        if any(s.name == "producthunt" for s in sources):
+            self.parallel_executor = ParallelExecutor(
+                max_workers=config.parallel_workers,
+                overall_timeout=300.0,
+                task_timeout=180.0,
+            )
+        else:
+            self.parallel_executor = ParallelExecutor(max_workers=config.parallel_workers)
         self.circuit_breakers = {
             source_name: CircuitBreaker() for source_name in self.sources.keys()
         }
@@ -82,7 +91,7 @@ class IngestionAgent:
         logger.info(f"Starting ingestion for session {self.session.session_id}")
         logger.info(f"Topic: {self.session.topic}")
 
-        if not self.session.complexity:
+        if not self.session.complexity and self.llm_enabled:
             complexity = assess_complexity(
                 self.session.topic,
                 self.config.llm.complexity_model,
@@ -93,6 +102,8 @@ class IngestionAgent:
             logger.info(
                 f"Complexity: {complexity.value}, Max iterations: {self.session.max_iterations}"
             )
+        elif not self.session.complexity and not self.llm_enabled:
+            self.session.complexity = "disabled"
 
         if not self.session.task_queue:
             self._seed_tasks()

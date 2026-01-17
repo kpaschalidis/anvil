@@ -83,6 +83,45 @@ class ParallelExecutor:
             f"Executing {len(tasks)} search tasks with {actual_workers} workers"
         )
 
+        if actual_workers <= 1:
+            for task in tasks:
+                start = time.monotonic()
+                try:
+                    page = self._safe_search(search_fn, task)
+                    duration_ms = int((time.monotonic() - start) * 1000)
+                    results.append(
+                        SearchResult(
+                            task=task,
+                            page=page,
+                            success=True,
+                            duration_ms=duration_ms,
+                        )
+                    )
+                    self.success_tracker.record(True)
+                    logger.info(
+                        f"Task {task.task_id} returned {len(page.items)} results"
+                    )
+                except Exception as e:
+                    duration_ms = int((time.monotonic() - start) * 1000)
+                    logger.error(f"Task {task.task_id} failed: {e}")
+                    results.append(
+                        SearchResult(
+                            task=task,
+                            page=Page(items=[], exhausted=True),
+                            success=False,
+                            error=str(e),
+                            duration_ms=duration_ms,
+                        )
+                    )
+                    self.success_tracker.record(False)
+
+            total_refs = sum(len(r.page.items) for r in results)
+            success_count = sum(1 for r in results if r.success)
+            logger.info(
+                f"Parallel execution complete: {total_refs} refs from {success_count}/{len(tasks)} successful tasks"
+            )
+            return results
+
         with ThreadPoolExecutor(max_workers=actual_workers) as executor:
             starts = {t.task_id: time.monotonic() for t in tasks}
             future_to_task = {

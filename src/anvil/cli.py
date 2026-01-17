@@ -6,7 +6,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from anvil.config import AgentConfig, resolve_model_alias
-from anvil.agent import CodingAgentWithTools
+from anvil.modes.registry import get_mode, list_modes
+from anvil.runtime.repl import AnvilREPL
+from anvil.runtime.runtime import AnvilRuntime
 
 
 def main():
@@ -30,6 +32,12 @@ def main():
     )
     parser.add_argument(
         "--no-lint", action="store_true", help="Disable auto-linting after edits"
+    )
+    parser.add_argument(
+        "mode_or_file",
+        nargs="?",
+        default=None,
+        help=f"Mode to run (available: {', '.join(list_modes())}); if not a mode, treated as a file",
     )
     parser.add_argument("files", nargs="*", help="Files to add to context")
     parser.add_argument("--message", "-m", help="Initial message")
@@ -59,12 +67,27 @@ def main():
         print("❌ Error: Not in a git repository")
         sys.exit(1)
 
-    agent = CodingAgentWithTools(root_path, config)
+    mode_name = args.mode_or_file
+    files = list(args.files)
+    if mode_name is None:
+        mode_name = "coding"
+    elif mode_name not in list_modes():
+        files = [mode_name] + files
+        mode_name = "coding"
 
-    for filepath in args.files:
-        agent.add_file_to_context(filepath)
+    try:
+        mode_config = get_mode(mode_name)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
-    agent.run(initial_message=args.message)
+    runtime = AnvilRuntime(root_path, config, mode=mode_config)
+
+    for filepath in files:
+        runtime.add_file_to_context(filepath)
+
+    repl = AnvilREPL(runtime)
+    repl.run(initial_message=args.message)
 
 
 if __name__ == "__main__":

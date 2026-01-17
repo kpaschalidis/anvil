@@ -66,12 +66,6 @@ Fix: Add timeout parameter: `result = self.shell.run_command(command, timeout=30
 """
 
     example_messages = [
-        dict(
-            role="user",
-            content="What can you tell me about this codebase?"
-        ),
-        dict(
-            role="assistant",
-            content="I'll explore the codebase structure first."
-        ),
+        dict(role="user", content="What can you tell me about this codebase?"),
+        dict(role="assistant", content="I'll explore the codebase structure first."),
     ]

@@ -36,6 +36,10 @@ def build_sources(config: ScoutConfig, names: list[str]):
             if config.reddit is None:
                 continue
             sources.append(cls(config.reddit))
+        elif name == "producthunt":
+            sources.append(cls(config.producthunt))
+        elif name == "github_issues":
+            sources.append(cls(config.github_issues))
         else:
             try:
                 sources.append(cls())
@@ -110,6 +114,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             config.max_cost_usd = args.max_cost
         if args.workers:
             config.parallel_workers = args.workers
+        elif "producthunt" in source_names:
+            # Product Hunt scraping uses Playwright; keep concurrency low by default.
+            config.parallel_workers = 1
         if args.deep_comments:
             config.deep_comments = args.deep_comments
         if args.extraction_model:
@@ -224,6 +231,116 @@ def cmd_run(args: argparse.Namespace) -> int:
         logger.exception("Agent failed")
         print(f"Error: {e}")
         return 1
+
+
+def cmd_dump(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose, args.quiet, args.log_format)
+    logger = logging.getLogger(__name__)
+    out_to_stdout = args.output == "-"
+
+    source_names = args.source.split(",") if args.source else ["producthunt"]
+    source_names = [s.strip() for s in source_names if s.strip()]
+
+    avail = available_sources()
+    for s in source_names:
+        if s not in avail:
+            print(
+                f"Error: Unknown source '{s}'. Available: {', '.join(sorted(avail))}"
+            )
+            return 1
+
+    try:
+        config = ScoutConfig.from_profile(args.profile, sources=source_names)
+        if args.max_iterations:
+            config.max_iterations = args.max_iterations
+        if args.max_documents:
+            config.max_documents = args.max_documents
+        if args.workers:
+            config.parallel_workers = args.workers
+        elif "producthunt" in source_names:
+            # Product Hunt scraping uses Playwright; keep concurrency low by default.
+            config.parallel_workers = 1
+        if args.deep_comments:
+            config.deep_comments = args.deep_comments
+        if args.min_content_length is not None or args.min_score is not None:
+            from scout.filters import FilterConfig
+
+            config.filter = FilterConfig(
+                min_content_length=args.min_content_length
+                if args.min_content_length is not None
+                else config.filter.min_content_length,
+                min_score=args.min_score if args.min_score is not None else config.filter.min_score,
+                skip_deleted_authors=config.filter.skip_deleted_authors,
+            )
+
+        config.validate(sources=source_names)
+
+    except ConfigError as e:
+        logger.error(f"Configuration error: {e}")
+        print(f"Error: {e}")
+        if "reddit" in source_names:
+            print("Make sure REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET are set.")
+        return 1
+
+    try:
+        session = load_or_create_session(
+            session_id=args.resume,
+            topic=args.topic,
+            max_iterations=config.max_iterations,
+            data_dir=config.data_dir,
+        )
+    except SessionError as e:
+        logger.error(f"Session error: {e}")
+        print(f"Error: {e}")
+        return 1
+
+    if args.resume:
+        print(f"Resuming session {session.session_id}", file=sys.stderr)
+        print(f"Topic: {session.topic}", file=sys.stderr)
+        print(f"Status: {session.status}", file=sys.stderr)
+        print(f"Documents: {session.stats.docs_collected}", file=sys.stderr)
+        print(f"Remaining tasks: {len(session.task_queue)}", file=sys.stderr)
+    else:
+        print(f"Starting new session: {session.session_id}", file=sys.stderr)
+        print(f"Topic: {session.topic}", file=sys.stderr)
+        print(f"Sources: {', '.join(source_names)}", file=sys.stderr)
+
+    sources = build_sources(config, source_names)
+    if not sources:
+        print("Error: No sources configured.")
+        return 1
+
+    agent = IngestionAgent(session, sources, config, llm_enabled=False)
+    try:
+        agent.run()
+    except KeyboardInterrupt:
+        return 0
+    except Exception as e:
+        logger.exception("Dump run failed")
+        print(f"Error: {e}")
+        return 1
+
+    session_dir = Path(config.data_dir) / session.session_id
+    raw_path = session_dir / "raw.jsonl"
+
+    if not raw_path.exists():
+        print(f"No raw output found at: {raw_path}")
+        return 1
+
+    if out_to_stdout:
+        with open(raw_path, "r", encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+        return 0
+
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(raw_path.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"Wrote raw output: {out_path}", file=sys.stderr)
+        return 0
+
+    print(f"Raw documents: {raw_path}", file=sys.stderr)
+    return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -453,7 +570,7 @@ def main() -> int:
         "--source",
         "-s",
         default="hackernews",
-        help="Data sources (comma-separated): hackernews, reddit (default: hackernews)",
+        help="Data sources (comma-separated): hackernews, reddit, producthunt, github_issues (default: hackernews)",
     )
     run_parser.add_argument(
         "--profile",
@@ -509,6 +626,65 @@ def main() -> int:
         help="Skip documents with score below N (filter)",
     )
     run_parser.set_defaults(func=cmd_run)
+
+    dump_parser = subparsers.add_parser(
+        "dump", help="Collect and output raw documents (no LLM)"
+    )
+    dump_parser.add_argument("topic", nargs="?", help="Topic to search for")
+    dump_parser.add_argument(
+        "--resume", "-r", metavar="SESSION_ID", help="Resume a paused session"
+    )
+    dump_parser.add_argument(
+        "--source",
+        "-s",
+        default="producthunt",
+        help="Data sources (comma-separated): hackernews, reddit, producthunt, github_issues (default: producthunt)",
+    )
+    dump_parser.add_argument(
+        "--profile",
+        "-p",
+        choices=["quick", "standard", "deep"],
+        default="quick",
+        help="Collection profile (default: quick)",
+    )
+    dump_parser.add_argument(
+        "--max-iterations", "-i", type=int, help="Maximum iterations"
+    )
+    dump_parser.add_argument(
+        "--max-documents", "-d", type=int, help="Maximum documents to collect"
+    )
+    dump_parser.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        metavar="N",
+        help="Number of parallel workers (default: 5)",
+    )
+    dump_parser.add_argument(
+        "--deep-comments",
+        choices=["auto", "always", "never"],
+        metavar="MODE",
+        help="Comment depth strategy: auto, always, never",
+    )
+    dump_parser.add_argument(
+        "--min-content-length",
+        type=int,
+        metavar="N",
+        help="Skip documents shorter than N characters (filter)",
+    )
+    dump_parser.add_argument(
+        "--min-score",
+        type=int,
+        metavar="N",
+        help="Skip documents with score below N (filter)",
+    )
+    dump_parser.add_argument(
+        "--output",
+        "-o",
+        metavar="PATH",
+        help="Write raw JSONL to PATH (use '-' for stdout; omit to only print the session raw.jsonl path)",
+    )
+    dump_parser.set_defaults(func=cmd_dump)
 
     list_parser = subparsers.add_parser("list", help="List all sessions")
     list_parser.set_defaults(func=cmd_list)

@@ -175,7 +175,7 @@ uv run scout export <session_id> --format csv
 
 ### Key Features
 
-- **Multiple sources**: Hacker News (ready), Reddit (requires approval)
+- **Multiple sources**: Hacker News (ready), Product Hunt (scrape), GitHub Issues (API), Reddit (requires approval)
 - **Smart extraction**: LLM-powered pain point identification
 - **Cost management**: Budgets, filtering, adaptive scaling
 - **Resumable sessions**: Pause and continue research

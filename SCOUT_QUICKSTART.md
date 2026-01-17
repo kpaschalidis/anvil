@@ -6,7 +6,7 @@
 
 ```bash
 cd /Users/konstantinospaschalides/Workspace/kpaschal/projects/anvil
-uv pip install -e ".[scout]"
+uv sync --extra scout
 ```
 
 ### 2. Set API Key
@@ -32,6 +32,34 @@ uv run scout --help
 ---
 
 ## 📖 Usage Examples
+
+### Raw Dump (No LLM)
+
+Collect raw documents only (no extraction, no API keys required):
+
+```bash
+uv run scout dump "AI note taking" --source producthunt
+```
+
+Product Hunt (requires Playwright browser install):
+
+```bash
+uv run playwright install chromium
+# If Product Hunt blocks headless browsing, run headful (default):
+# export SCOUT_PRODUCTHUNT_HEADLESS=0
+# Optional tuning:
+# export SCOUT_PRODUCTHUNT_NAV_TIMEOUT_MS=30000
+# export SCOUT_PRODUCTHUNT_USER_DATA_DIR=".anvil/producthunt_profile"
+# export SCOUT_PRODUCTHUNT_CHANNEL="chrome"
+uv run scout dump "insurance broker" --source producthunt
+```
+
+GitHub issues (optional token recommended):
+
+```bash
+export GITHUB_TOKEN="ghp_..."
+uv run scout dump "kubernetes installation problems" --source github_issues
+```
 
 ### Logging Modes
 
