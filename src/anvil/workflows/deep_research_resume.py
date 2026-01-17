@@ -48,7 +48,7 @@ def resume_deep_research(
         raise FileNotFoundError(f"Missing plan: {plan_path}")
 
     plan = _load_json(plan_path)
-    tasks = workflow._to_worker_tasks(plan)  # noqa: SLF001 (internal, by design for resume)
+    tasks = workflow._to_worker_tasks(query, plan)  # noqa: SLF001 (internal, by design for resume)
 
     existing = _load_existing_worker_results(workers_dir)
     if existing:

@@ -363,7 +363,7 @@ def _cmd_research(args) -> int:
 
     from anvil.sessions.meta import load_meta, write_meta
     from anvil.subagents.parallel import ParallelWorkerRunner
-    from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow
+    from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow, PlanningError
     from anvil.workflows.deep_research_resume import resume_deep_research
     from anvil.workflows.research_artifacts import make_research_session_dir, write_json, write_text
     from anvil.workflows.research_persist import persist_research_outcome
@@ -481,6 +481,9 @@ def _cmd_research(args) -> int:
         meta["updated_at"] = _utc_ts()
         meta["error"] = str(e)
         write_json(meta_path, meta)
+        if isinstance(e, PlanningError) and not args.no_save_artifacts:
+            write_text(session_dir / "research" / "planner_raw.txt", (e.raw or "") + "\n")
+            write_json(session_dir / "research" / "planner_error.json", {"error": str(e)})
         if not args.no_save_artifacts:
             write_text(session_dir / "research" / "error.txt", str(e) + "\n")
         print(f"Error: {e}", file=sys.stderr)

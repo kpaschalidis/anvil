@@ -11,6 +11,12 @@ from anvil.subagents.task_tool import SubagentRunner
 from anvil.subagents.parallel import WorkerResult
 
 
+class PlanningError(RuntimeError):
+    def __init__(self, message: str, *, raw: str = ""):
+        super().__init__(message)
+        self.raw = raw
+
+
 @dataclass(frozen=True, slots=True)
 class DeepResearchConfig:
     model: str = "gpt-4o"
@@ -31,6 +37,8 @@ class DeepResearchOutcome:
     results: list[WorkerResult]
     citations: list[str]
     report_markdown: str
+    planner_raw: str = ""
+    planner_error: str | None = None
 
 
 def _planning_prompt(query: str, *, max_tasks: int) -> str:
@@ -110,8 +118,8 @@ class DeepResearchWorkflow:
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="plan", current=0, total=None, message="Planning searches"))
 
-        plan = self._plan(query)
-        tasks = self._to_worker_tasks(plan)
+        plan, planner_raw, planner_error = self._plan(query)
+        tasks = self._to_worker_tasks(query, plan)
 
         if self.emitter is not None:
             self.emitter.emit(
@@ -172,47 +180,118 @@ class DeepResearchWorkflow:
         return DeepResearchOutcome(
             query=query,
             plan=plan,
+            planner_raw=planner_raw,
+            planner_error=planner_error,
             tasks=tasks,
             results=results,
             citations=citations,
             report_markdown=report,
         )
 
-    def _plan(self, query: str) -> dict[str, Any]:
+    def _plan(self, query: str) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
             model=self.config.model,
             messages=[{"role": "user", "content": _planning_prompt(query, max_tasks=5)}],
             temperature=0.2,
             max_tokens=800,
         )
-        content = resp.choices[0].message.content or ""
+        content = (resp.choices[0].message.content or "").strip()
         try:
-            return json.loads(content)
-        except Exception:
-            return {
-                "tasks": [
-                    {
-                        "id": "overview",
-                        "search_query": query,
-                        "instructions": "Find high-quality overview sources and key facts with links.",
-                    },
-                    {
-                        "id": "comparison",
-                        "search_query": f"{query} comparison",
-                        "instructions": "Find comparisons, pros/cons, and alternatives with links.",
-                    },
-                    {
-                        "id": "recent",
-                        "search_query": f"{query} 2024 2025",
-                        "instructions": "Find recent changes/news and notable developments with links.",
-                    },
-                ]
-            }
+            plan = json.loads(content)
+        except Exception as e:
+            msg = f"Planner returned invalid JSON: {e}"
+            if not self.config.best_effort:
+                raise PlanningError(msg, raw=content) from e
+            if self.emitter is not None:
+                self.emitter.emit(
+                    ProgressEvent(
+                        stage="plan",
+                        current=0,
+                        total=None,
+                        message=f"WARNING: {msg}. Using fallback plan (best-effort).",
+                    )
+                )
+            return self._fallback_plan(query), content, msg
 
-    def _to_worker_tasks(self, plan: dict[str, Any]) -> list[WorkerTask]:
+        try:
+            validated = self._validate_plan(plan)
+        except PlanningError as e:
+            if not self.config.best_effort:
+                raise
+            msg = str(e)
+            if self.emitter is not None:
+                self.emitter.emit(
+                    ProgressEvent(
+                        stage="plan",
+                        current=0,
+                        total=None,
+                        message=f"WARNING: {msg}. Using fallback plan (best-effort).",
+                    )
+                )
+            return self._fallback_plan(query), content, msg
+
+        return validated, content, None
+
+    def _fallback_plan(self, query: str) -> dict[str, Any]:
+        return {
+            "tasks": [
+                {
+                    "id": "overview",
+                    "search_query": query,
+                    "instructions": "Find high-quality overview sources and key facts with links.",
+                },
+                {
+                    "id": "comparison",
+                    "search_query": f"{query} comparison",
+                    "instructions": "Find comparisons, pros/cons, and alternatives with links.",
+                },
+                {
+                    "id": "recent",
+                    "search_query": f"{query} 2024 2025",
+                    "instructions": "Find recent changes/news and notable developments with links.",
+                },
+            ]
+        }
+
+    def _validate_plan(self, plan: Any) -> dict[str, Any]:
+        if not isinstance(plan, dict):
+            raise PlanningError("Planner output must be a JSON object")
+        tasks = plan.get("tasks")
+        if not isinstance(tasks, list):
+            raise PlanningError("Planner output must include `tasks` as a list")
+
+        validated_tasks: list[dict[str, str]] = []
+        for idx, t in enumerate(tasks):
+            if not isinstance(t, dict):
+                continue
+            task_id = str(t.get("id") or "").strip()
+            search_query = str(t.get("search_query") or "").strip()
+            instructions = str(t.get("instructions") or "").strip()
+            if not task_id:
+                task_id = f"task_{idx}"
+            if not search_query or not instructions:
+                continue
+            validated_tasks.append(
+                {"id": task_id, "search_query": search_query, "instructions": instructions}
+            )
+
+        if len(validated_tasks) < 3:
+            raise PlanningError("Planner output did not produce enough valid tasks (need >= 3)")
+
+        return {"tasks": validated_tasks[:10]}
+
+    def _to_worker_tasks(self, query: str, plan: dict[str, Any]) -> list[WorkerTask]:
         tasks = plan.get("tasks") if isinstance(plan, dict) else None
         if not isinstance(tasks, list) or not tasks:
-            tasks = []
+            if not self.config.best_effort:
+                raise PlanningError("Plan produced no tasks")
+            return [
+                WorkerTask(
+                    id="search",
+                    prompt=f"Use `web_search` for: {query}. Return key findings with URLs.",
+                    max_iterations=self.config.worker_max_iterations,
+                )
+            ]
         worker_tasks: list[WorkerTask] = []
         for idx, t in enumerate(tasks[:10]):
             if not isinstance(t, dict):
@@ -238,6 +317,8 @@ class DeepResearchWorkflow:
                 )
             )
         if not worker_tasks:
+            if not self.config.best_effort:
+                raise PlanningError("Plan tasks were empty after filtering")
             worker_tasks.append(
                 WorkerTask(
                     id="search",

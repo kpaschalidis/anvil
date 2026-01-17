@@ -1,6 +1,8 @@
 import json
 
-from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow
+import pytest
+
+from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow, PlanningError
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerResult, WorkerTask
 
 
@@ -64,9 +66,45 @@ def test_deep_research_workflow_fallback_plan(monkeypatch):
     wf = DeepResearchWorkflow(
         subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
         parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
-        config=DeepResearchConfig(model="gpt-4o", max_workers=2, worker_max_iterations=2, worker_timeout_s=10.0),
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            best_effort=True,
+        ),
         emitter=None,
     )
     outcome = wf.run("query")
     assert outcome.report_markdown.startswith("# REPORT")
     assert "## Sources" in outcome.report_markdown
+
+
+def test_deep_research_workflow_planning_invalid_json_is_error(monkeypatch):
+    from common import llm as common_llm
+
+    def fake_completion(**kwargs):
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        return Resp("not json")
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(model="gpt-4o", max_workers=2, worker_max_iterations=2, worker_timeout_s=10.0),
+        emitter=None,
+    )
+    with pytest.raises(PlanningError):
+        wf.run("query")

@@ -11,6 +11,10 @@
 - [x] Research resume reruns (`anvil research --resume <id>`)
 
 ## Next
+- [x] Deep research planning: fail-fast on invalid JSON (no silent fallback)
+- [x] Deep research artifacts: persist `planner_raw.txt` + `planner_error.json` under session
+- [x] Fix deep research empty-task fallback bug (`_to_worker_tasks` should never reference undefined `query`)
+- [x] Tests: strict planning failure + best-effort fallback coverage
 - [ ] Improve citation UX: per-claim numbered citations + short “why this source” snippet
 - [ ] Sessions UX: list both fetch+research by default; add shortcuts to open fetch artifacts
 - [ ] Align fetch sessions meta: optionally emit `meta.json` directly from FetchService (not only CLI)
