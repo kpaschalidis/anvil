@@ -28,6 +28,7 @@ def persist_research_outcome(
     verify_planner_error_path = session_dir / "research" / "verify_planner_error.json"
     workers_dir = session_dir / "research" / "workers"
     report_path = Path(output_path) if output_path else (session_dir / "research" / "report.md")
+    report_json_path = session_dir / "research" / "report.json"
 
     if save_artifacts and not output_path:
         write_json(plan_path, outcome.plan)
@@ -81,6 +82,10 @@ def persist_research_outcome(
                 },
             )
 
+        report_json = getattr(outcome, "report_json", None)
+        if isinstance(report_json, dict):
+            write_json(report_json_path, report_json)
+
     write_text(report_path, outcome.report_markdown + "\n")
     write_json(meta_path, meta)
 
@@ -98,4 +103,5 @@ def persist_research_outcome(
         "verify_planner_error_path": verify_planner_error_path,
         "workers_dir": workers_dir,
         "report_path": report_path,
+        "report_json_path": report_json_path,
     }

@@ -93,8 +93,9 @@ uv run anvil research --profile deep "competitive analysis of AI coding agents" 
     # Saved artifacts (default)
     # - `data/sessions/<session_id>/meta.json`
     # - `data/sessions/<session_id>/research/report.md`
+    # - `data/sessions/<session_id>/research/report.json` (structured)
     # Flags: --profile, --session-id, --data-dir, --output, --no-save-artifacts, --min-citations, --min-domains,
-    #        --target-web-search-calls, --max-web-search-calls, --best-effort
+    #        --target-web-search-calls, --max-web-search-calls, --max-web-extract-calls, --verify-max-tasks, --best-effort
 
 # Resume research (reruns failed workers; fails unless all succeed)
 uv run anvil research --resume <session_id>

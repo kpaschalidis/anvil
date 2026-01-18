@@ -54,6 +54,7 @@ class DeepResearchOutcome:
     results: list[WorkerResult]
     citations: list[str]
     report_markdown: str
+    report_json: dict[str, Any] | None = None
     planner_raw: str = ""
     planner_error: str | None = None
     gap_plan: dict[str, Any] | None = None
@@ -514,7 +515,7 @@ class DeepResearchWorkflow:
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message="Synthesizing report"))
 
-        report = self._synthesize_and_render(query, findings, citations)
+        report, report_json = self._synthesize_and_render(query, findings, citations)
 
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="done", current=1, total=1, message="Done"))
@@ -536,6 +537,7 @@ class DeepResearchWorkflow:
             results=results,
             citations=citations,
             report_markdown=report,
+            report_json=report_json,
             gap_plan=gap_plan,
             gap_planner_raw=gap_planner_raw,
             gap_planner_error=gap_planner_error,
@@ -945,9 +947,10 @@ class DeepResearchWorkflow:
         query: str,
         findings: list[dict[str, Any]],
         citations: list[str],
-    ) -> str:
+    ) -> tuple[str, dict[str, Any] | None]:
         if self.config.require_quote_per_claim and self.config.multi_pass_synthesis and not self.config.best_effort:
-            return self._multi_pass_synthesize_and_render(query, findings, citations)
+            md, payload = self._multi_pass_synthesize_and_render(query, findings, citations)
+            return md, payload
 
         resp = llm.completion(
             model=self.config.model,
@@ -972,184 +975,15 @@ class DeepResearchWorkflow:
             if not self.config.best_effort:
                 raise RuntimeError("Synthesis returned invalid JSON")
 
-        title = str((payload or {}).get("title") or "Deep Research Report")
-        summary = (payload or {}).get("summary_bullets") or []
-        findings_out = (payload or {}).get("findings") or []
-        open_qs = (payload or {}).get("open_questions") or []
-
-        allowed = set(citations)
-        source_meta: dict[str, dict[str, str]] = {}
-        for f in findings:
-            if not isinstance(f, dict):
-                continue
-            m = f.get("sources")
-            if isinstance(m, dict):
-                for url, meta in m.items():
-                    if isinstance(url, str) and url.startswith("http") and isinstance(meta, dict):
-                        merged: dict[str, str] = {}
-                        title = meta.get("title")
-                        snippet = meta.get("snippet")
-                        if isinstance(title, str) and title.strip():
-                            merged["title"] = title.strip()
-                        if isinstance(snippet, str) and snippet.strip():
-                            merged["snippet"] = snippet.strip()
-                        if merged:
-                            source_meta.setdefault(url, {}).update(merged)
-            ev = f.get("evidence")
-            if isinstance(ev, list):
-                for item in ev:
-                    if not isinstance(item, dict):
-                        continue
-                    url = item.get("url")
-                    if not (isinstance(url, str) and url.startswith("http")):
-                        continue
-                    merged: dict[str, str] = {}
-                    title = item.get("title")
-                    excerpt = item.get("excerpt")
-                    if isinstance(title, str) and title.strip():
-                        merged["title"] = title.strip()
-                    if isinstance(excerpt, str) and excerpt.strip():
-                        merged["excerpt"] = excerpt.strip()
-                    if merged:
-                        source_meta.setdefault(url, {}).update(merged)
-
-        evidence_text: dict[str, str] = {}
-        if self.config.require_quote_per_claim:
-            for url, meta in source_meta.items():
-                ex = meta.get("excerpt")
-                if isinstance(ex, str) and ex.strip():
-                    evidence_text[url] = ex
-
-        rendered_findings: list[str] = []
-        citation_numbers: dict[str, int] = {}
-        ordered_urls: list[str] = []
-
-        def _num(url: str) -> int:
-            if url not in citation_numbers:
-                citation_numbers[url] = len(citation_numbers) + 1
-                ordered_urls.append(url)
-            return citation_numbers[url]
-
-        def _why(url: str) -> str:
-            meta = source_meta.get(url) or {}
-            snippet = (meta.get("excerpt") or meta.get("snippet") or "").strip()
-            title = (meta.get("title") or "").strip()
-            if snippet:
-                s = " ".join(snippet.split())
-                return s[:220] + ("…" if len(s) > 220 else "")
-            if title:
-                return title
-            return url.split("/")[2] if url.startswith("http") else url
-
-        def _norm(s: str) -> str:
-            return " ".join((s or "").split())
-
-        def _quote_ok(url: str, quote: str) -> bool:
-            q = _norm(quote)
-            if not q:
-                return False
-            txt = _norm(evidence_text.get(url, ""))
-            return q in txt
-
-        if isinstance(findings_out, list):
-            for it in findings_out:
-                if not isinstance(it, dict):
-                    continue
-                claim = str(it.get("claim") or "").strip()
-                if not claim:
-                    continue
-                if self.config.require_quote_per_claim:
-                    ev = it.get("evidence") or []
-                    if not isinstance(ev, list):
-                        ev = []
-                    ev_items = []
-                    for e in ev:
-                        if not isinstance(e, dict):
-                            continue
-                        url = e.get("url")
-                        quote = e.get("quote")
-                        if not (isinstance(url, str) and url in allowed and isinstance(quote, str)):
-                            continue
-                        if not _quote_ok(url, quote):
-                            continue
-                        ev_items.append({"url": url, "quote": quote.strip()})
-
-                    if not ev_items:
-                        if self.config.best_effort:
-                            continue
-                        raise RuntimeError(f"Synthesis produced an unsupported claim: {claim}")
-
-                    urls = [x["url"] for x in ev_items]
-                    nums = [_num(u) for u in urls]
-                    links = "".join(f"[{n}]" for n in nums[:3])
-                    primary = ev_items[0]
-                    rendered_findings.append(f"- {claim} {links}")
-                    rendered_findings.append(f"  - Why: {_why(primary['url'])}")
-                    rendered_findings.append(f"  - Quote: “{_norm(primary['quote'])}”")
-                else:
-                    cites = it.get("citations") or []
-                    if not isinstance(cites, list):
-                        cites = []
-                    cites = [c for c in cites if isinstance(c, str) and c in allowed]
-                    if not cites:
-                        if self.config.best_effort:
-                            continue
-                        raise RuntimeError(f"Synthesis produced an uncited claim: {claim}")
-                    nums = [_num(u) for u in cites]
-                    links = "".join(f"[{n}]" for n in nums[:3])
-                    primary = cites[0]
-                    rendered_findings.append(f"- {claim} {links}")
-                    rendered_findings.append(f"  - Why: {_why(primary)}")
-
-        if self.config.require_citations and not self.config.best_effort and not rendered_findings:
-            raise RuntimeError("Synthesis produced no cited findings")
-
-        lines: list[str] = [f"# {title}", ""]
-        if self.config.best_effort:
-            lines.extend(
-                [
-                    "> Warning: best-effort mode enabled; output may be incomplete.",
-                    "",
-                ]
-            )
-
-        if isinstance(summary, list) and summary:
-            lines.append("## Summary")
-            for b in summary[:12]:
-                if isinstance(b, str) and b.strip():
-                    lines.append(f"- {b.strip()}")
-            lines.append("")
-
-        if rendered_findings:
-            lines.append("## Findings")
-            lines.extend(rendered_findings)
-            lines.append("")
-
-        if isinstance(open_qs, list) and open_qs:
-            lines.append("## Open Questions")
-            for q in open_qs[:12]:
-                if isinstance(q, str) and q.strip():
-                    lines.append(f"- {q.strip()}")
-            lines.append("")
-
-        if ordered_urls:
-            lines.append("## Sources")
-            for u in ordered_urls:
-                n = citation_numbers[u]
-                meta = source_meta.get(u) or {}
-                title = (meta.get("title") or "").strip()
-                label = f"{title} — {u}" if title else u
-                lines.append(f"- [{n}]({u}) {label}")
-            lines.append("")
-
-        return "\n".join(lines).strip()
+        md = self._render_from_payload(query=query, findings=findings, citations=citations, payload=(payload or {}))
+        return md, payload
 
     def _multi_pass_synthesize_and_render(
         self,
         query: str,
         findings: list[dict[str, Any]],
         citations: list[str],
-    ) -> str:
+    ) -> tuple[str, dict[str, Any]]:
         allowed_urls = set(citations)
 
         # 1) Outline
@@ -1299,11 +1133,14 @@ class DeepResearchWorkflow:
 
         # Reuse existing rendering logic by temporarily substituting payload-derived fields.
         # This keeps citation numbering and source list behavior consistent.
-        return self._render_from_payload(
+        return (
+            self._render_from_payload(
             query=query,
             findings=findings,
             citations=citations,
             payload=synthesized,
+            ),
+            synthesized,
         )
 
     def _render_from_payload(
@@ -1416,7 +1253,9 @@ class DeepResearchWorkflow:
                             continue
                         ev_items.append({"url": url, "quote": quote.strip()})
                     if not ev_items:
-                        continue
+                        if self.config.best_effort:
+                            continue
+                        raise RuntimeError(f"Synthesis produced an unsupported claim: {claim}")
                     urls = [x["url"] for x in ev_items]
                     nums = [_num(u) for u in urls]
                     links = "".join(f"[{n}]" for n in nums[:3])
@@ -1430,7 +1269,9 @@ class DeepResearchWorkflow:
                         cites = []
                     cites = [c for c in cites if isinstance(c, str) and c in allowed]
                     if not cites:
-                        continue
+                        if self.config.best_effort:
+                            continue
+                        raise RuntimeError(f"Synthesis produced an uncited claim: {claim}")
                     nums = [_num(u) for u in cites]
                     links = "".join(f"[{n}]" for n in nums[:3])
                     primary = cites[0]

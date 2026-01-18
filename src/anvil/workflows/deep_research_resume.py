@@ -104,7 +104,7 @@ def resume_deep_research(
         }
         for r in results
     ]
-    report = workflow._synthesize_and_render(query, findings, citations)  # noqa: SLF001
+    report, report_json = workflow._synthesize_and_render(query, findings, citations)  # noqa: SLF001
 
     return DeepResearchOutcome(
         query=query,
@@ -113,4 +113,5 @@ def resume_deep_research(
         results=results,
         citations=citations,
         report_markdown=report,
+        report_json=report_json,
     )
