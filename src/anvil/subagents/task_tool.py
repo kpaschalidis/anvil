@@ -128,11 +128,13 @@ class SubagentRunner:
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
                     dt_ms: int | None = None
+                    executed = True
                     if allowed_tool_names is not None and tool_name not in allowed_tool_names:
                         result = {
                             "success": False,
                             "error": f"Tool not allowed in worker mode: {tool_name}",
                         }
+                        executed = False
                     elif (
                         tool_name == "web_search"
                         and max_web_search_calls is not None
@@ -142,6 +144,7 @@ class SubagentRunner:
                             "success": False,
                             "error": f"Max web_search calls reached ({max_web_search_calls})",
                         }
+                        executed = False
                     elif (
                         tool_name == "web_extract"
                         and max_web_extract_calls is not None
@@ -151,6 +154,7 @@ class SubagentRunner:
                             "success": False,
                             "error": f"Max web_extract calls reached ({max_web_extract_calls})",
                         }
+                        executed = False
                     else:
                         t0 = time.perf_counter()
                         result = self.tool_registry.execute_tool(tool_name, tool_args)
@@ -164,11 +168,11 @@ class SubagentRunner:
                             duration_ms=dt_ms,
                         )
                     )
-                    if tool_name == "web_search":
+                    if tool_name == "web_search" and executed:
                         trace.web_search_calls += 1
                         trace.citations.update(_extract_citations_from_web_search_result(result))
                         trace.sources.update(_extract_source_metadata_from_web_search_result(result))
-                    if tool_name == "web_extract":
+                    if tool_name == "web_extract" and executed:
                         trace.web_extract_calls += 1
                         extracted = _extract_extracted_from_web_extract_result(result)
                         if extracted and extracted.get("url"):
