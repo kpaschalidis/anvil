@@ -96,6 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     research.add_argument("--extract-max-chars", type=int, default=None, help="Max chars returned per web_extract call")
     research.add_argument("--min-domains", type=int, default=None, help="Min unique domains across all citations")
     research.add_argument("--round2-max-tasks", type=int, default=None, help="Max follow-up tasks in deep profile")
+    research.add_argument("--verify-max-tasks", type=int, default=None, help="Max verification tasks (deep profile)")
     research.add_argument("--min-citations", type=int, default=None)
     research.add_argument("--data-dir", default="data/sessions")
     research.add_argument("--session-id", default=None)
@@ -393,6 +394,7 @@ def _cmd_research(args) -> int:
             "min_citations": 15,
             "min_domains": 6,
             "enable_round2": True,
+            "verify_max_tasks": 2,
             "enable_worker_continuation": True,
             "max_worker_continuations": 2,
             "enable_deep_read": True,
@@ -414,6 +416,7 @@ def _cmd_research(args) -> int:
             "min_citations": 3,
             "min_domains": 3,
             "enable_round2": False,
+            "verify_max_tasks": 0,
             "enable_worker_continuation": False,
             "max_worker_continuations": 0,
             "enable_deep_read": False,
@@ -425,6 +428,7 @@ def _cmd_research(args) -> int:
     worker_timeout = float(_p(args.worker_timeout, defaults["worker_timeout"]))
     max_tasks = int(_p(args.max_tasks, defaults["max_tasks"]))
     round2_max_tasks = int(_p(args.round2_max_tasks, defaults["round2_max_tasks"]))
+    verify_max_tasks = int(_p(args.verify_max_tasks, defaults["verify_max_tasks"]))
     page_size = int(_p(args.page_size, defaults["page_size"]))
     max_pages = int(_p(args.max_pages, defaults["max_pages"]))
     target_web_search_calls = int(
@@ -451,6 +455,7 @@ def _cmd_research(args) -> int:
             worker_timeout_s=worker_timeout,
             max_tasks=max_tasks,
             round2_max_tasks=round2_max_tasks,
+            verify_max_tasks=verify_max_tasks,
             page_size=page_size,
             max_pages=max_pages,
             target_web_search_calls=target_web_search_calls,
@@ -511,6 +516,7 @@ def _cmd_research(args) -> int:
                 "enable_worker_continuation": bool(enable_worker_continuation),
                 "max_worker_continuations": int(max_worker_continuations),
                 "round2_max_tasks": round2_max_tasks,
+                "verify_max_tasks": verify_max_tasks,
                 "min_citations": min_citations,
                 "min_domains": min_domains,
                 "enable_round2": bool(enable_round2),

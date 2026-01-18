@@ -23,6 +23,9 @@ def persist_research_outcome(
     gap_plan_path = session_dir / "research" / "gap_plan.json"
     gap_planner_raw_path = session_dir / "research" / "gap_planner_raw.txt"
     gap_planner_error_path = session_dir / "research" / "gap_planner_error.json"
+    verify_plan_path = session_dir / "research" / "verify_plan.json"
+    verify_planner_raw_path = session_dir / "research" / "verify_planner_raw.txt"
+    verify_planner_error_path = session_dir / "research" / "verify_planner_error.json"
     workers_dir = session_dir / "research" / "workers"
     report_path = Path(output_path) if output_path else (session_dir / "research" / "report.md")
 
@@ -46,6 +49,18 @@ def persist_research_outcome(
             )
         if gap_planner_error:
             write_json(gap_planner_error_path, {"error": str(gap_planner_error)})
+        verify_plan = getattr(outcome, "verify_plan", None)
+        verify_planner_raw = getattr(outcome, "verify_planner_raw", "") or ""
+        verify_planner_error = getattr(outcome, "verify_planner_error", None)
+        if isinstance(verify_plan, dict) and verify_plan.get("tasks"):
+            write_json(verify_plan_path, verify_plan)
+        if verify_planner_raw:
+            write_text(
+                verify_planner_raw_path,
+                verify_planner_raw + ("\n" if not verify_planner_raw.endswith("\n") else ""),
+            )
+        if verify_planner_error:
+            write_json(verify_planner_error_path, {"error": str(verify_planner_error)})
         for r in outcome.results:
             write_json(
                 workers_dir / f"{r.task_id}.json",
@@ -78,6 +93,9 @@ def persist_research_outcome(
         "gap_plan_path": gap_plan_path,
         "gap_planner_raw_path": gap_planner_raw_path,
         "gap_planner_error_path": gap_planner_error_path,
+        "verify_plan_path": verify_plan_path,
+        "verify_planner_raw_path": verify_planner_raw_path,
+        "verify_planner_error_path": verify_planner_error_path,
         "workers_dir": workers_dir,
         "report_path": report_path,
     }

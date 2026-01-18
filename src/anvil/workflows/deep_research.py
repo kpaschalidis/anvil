@@ -38,6 +38,7 @@ class DeepResearchConfig:
     require_quote_per_claim: bool = False
     enable_round2: bool = False
     round2_max_tasks: int = 3
+    verify_max_tasks: int = 0
     require_citations: bool = True
     min_total_citations: int = 3
     strict_all: bool = True
@@ -57,6 +58,9 @@ class DeepResearchOutcome:
     gap_plan: dict[str, Any] | None = None
     gap_planner_raw: str = ""
     gap_planner_error: str | None = None
+    verify_plan: dict[str, Any] | None = None
+    verify_planner_raw: str = ""
+    verify_planner_error: str | None = None
 
 
 def _planning_prompt(query: str, *, max_tasks: int) -> str:
@@ -111,6 +115,36 @@ Rules:
 - Provide 0 to {max_tasks} follow-up tasks.
 - Only propose tasks that address specific gaps in the current findings.
 - Each task must be answerable via web search results (URLs).
+	"""
+
+
+def _verification_prompt(query: str, findings: list[dict[str, Any]], *, max_tasks: int) -> str:
+    return f"""You are a research orchestrator.
+
+Goal: propose follow-up web searches to VERIFY and corroborate the most important claims from the current findings.
+
+User query:
+{query}
+
+Current findings (JSON):
+{json.dumps(findings, ensure_ascii=False)}
+
+Return ONLY valid JSON in this exact shape:
+{{
+  "tasks": [
+    {{
+      "id": "short_id",
+      "search_query": "web search query",
+      "instructions": "what to verify and what to return (must include URLs)"
+    }}
+  ]
+}}
+
+Rules:
+- Provide 0 to {max_tasks} verification tasks.
+- Prefer authoritative / primary sources and new domains not heavily used already.
+- Focus on high-impact, easy-to-misinfer points; explicitly seek corroboration (or contradiction).
+- Each task must be answerable via web search results + extracted page reads (URLs).
 """
 
 
@@ -328,6 +362,73 @@ class DeepResearchWorkflow:
                         }
                     )
 
+        verify_plan = None
+        verify_planner_raw = ""
+        verify_planner_error = None
+        verify_tasks: list[WorkerTask] = []
+        if int(self.config.verify_max_tasks) > 0 and not self.config.best_effort:
+            if self.emitter is not None:
+                self.emitter.emit(
+                    ProgressEvent(stage="verify", current=0, total=None, message="Planning verification searches")
+                )
+            verify_plan, verify_planner_raw, verify_planner_error = self._verification_plan(query, findings)
+            verify_tasks = self._to_worker_tasks(query, verify_plan) if verify_plan else []
+            if verify_tasks:
+                if self.emitter is not None:
+                    self.emitter.emit(
+                        ProgressEvent(
+                            stage="workers",
+                            current=0,
+                            total=len(verify_tasks),
+                            message=f"Running {len(verify_tasks)} verification tasks (max concurrency: {self.config.max_workers})",
+                        )
+                    )
+                more = self.parallel_runner.spawn_parallel(
+                    verify_tasks,
+                    max_workers=self.config.max_workers,
+                    timeout=self.config.worker_timeout_s,
+                    allow_writes=False,
+                    max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
+                    max_web_extract_calls=(
+                        max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
+                    ),
+                    extract_max_chars=int(self.config.extract_max_chars),
+                )
+                more = self._maybe_continue_workers(
+                    verify_tasks,
+                    more,
+                    stage_label="workers",
+                    message_prefix="Continuing verification tasks",
+                )
+                more = self._apply_worker_invariants(more)
+                results = list(results) + list(more)
+                citations = (
+                    self._collect_evidence_urls(results)
+                    if self.config.enable_deep_read
+                    else self._collect_citations_from_traces(results)
+                )
+                failures = [r for r in results if not r.success]
+                if self.config.strict_all and failures:
+                    raise RuntimeError(
+                        "Deep research failed because one or more workers failed.\n\n"
+                        f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
+                    )
+                findings = []
+                for r in results:
+                    findings.append(
+                        {
+                            "task_id": r.task_id,
+                            "success": r.success,
+                            "output": r.output,
+                            "error": r.error,
+                            "citations": list(r.citations),
+                            "sources": getattr(r, "sources", {}) or {},
+                            "evidence": list(getattr(r, "evidence", ()) or ()),
+                            "web_search_calls": int(r.web_search_calls or 0),
+                            "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
+                        }
+                    )
+
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message="Synthesizing report"))
 
@@ -339,19 +440,26 @@ class DeepResearchWorkflow:
         combined_plan = plan
         if round2_tasks:
             combined_plan = {"tasks": (plan.get("tasks") or []) + (gap_plan.get("tasks") or [])} if gap_plan else plan
+        if verify_tasks and isinstance(combined_plan, dict):
+            combined_plan = {
+                "tasks": (combined_plan.get("tasks") or []) + (verify_plan.get("tasks") or [])  # type: ignore[union-attr]
+            } if verify_plan else combined_plan
 
         return DeepResearchOutcome(
             query=query,
             plan=combined_plan,
             planner_raw=planner_raw,
             planner_error=planner_error,
-            tasks=round1_tasks + round2_tasks,
+            tasks=round1_tasks + round2_tasks + verify_tasks,
             results=results,
             citations=citations,
             report_markdown=report,
             gap_plan=gap_plan,
             gap_planner_raw=gap_planner_raw,
             gap_planner_error=gap_planner_error,
+            verify_plan=verify_plan,
+            verify_planner_raw=verify_planner_raw,
+            verify_planner_error=verify_planner_error,
         )
 
     def _plan(self, query: str, *, max_tasks: int, min_tasks: int) -> tuple[dict[str, Any], str, str | None]:
@@ -577,6 +685,36 @@ class DeepResearchWorkflow:
             if isinstance(t, dict) and isinstance(t.get("id"), str) and not t["id"].startswith("r2_"):
                 t["id"] = f"r2_{t['id']}"
         return {"tasks": tasks[: max(0, int(self.config.round2_max_tasks))]}, content, None
+
+    def _verification_plan(self, query: str, findings: list[dict[str, Any]]) -> tuple[dict[str, Any], str, str | None]:
+        resp = llm.completion(
+            model=self.config.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": _verification_prompt(
+                        query,
+                        findings,
+                        max_tasks=max(0, int(self.config.verify_max_tasks)),
+                    ),
+                }
+            ],
+            temperature=0.2,
+            max_tokens=800,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        if not content:
+            raise PlanningError("Verification planner returned an empty response.", raw=content)
+        try:
+            plan = self._parse_planner_json(content)
+        except Exception as e:
+            raise PlanningError(f"Verification planner returned invalid JSON: {e}", raw=content) from e
+        validated = self._validate_plan(plan, min_tasks=0)
+        tasks = validated.get("tasks") or []
+        for t in tasks:
+            if isinstance(t, dict) and isinstance(t.get("id"), str) and not t["id"].startswith("v_"):
+                t["id"] = f"v_{t['id']}"
+        return {"tasks": tasks[: max(0, int(self.config.verify_max_tasks))]}, content, None
 
     def _parse_planner_json(self, content: str) -> Any:
         try:
