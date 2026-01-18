@@ -110,6 +110,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow partial output (not recommended; strict is default)",
     )
+    research.add_argument(
+        "--coverage-warn",
+        action="store_true",
+        help="Do not fail if report coverage targets (citations/domains) are missed; warn instead",
+    )
+    research.add_argument(
+        "--coverage-strict",
+        action="store_true",
+        help="Fail if report coverage targets (citations/domains) are missed after repair",
+    )
 
     sessions = subparsers.add_parser("sessions", help="List/open session artifacts")
     sessions.add_argument("--data-dir", default="data/sessions")
@@ -402,6 +412,7 @@ def _cmd_research(args) -> int:
             "report_min_citations": 15,
             "report_min_domains": 6,
             "report_findings": 8,
+            "coverage_mode": "error",
             "enable_round2": True,
             "verify_max_tasks": 2,
             "enable_worker_continuation": True,
@@ -428,6 +439,7 @@ def _cmd_research(args) -> int:
             "report_min_citations": 8,
             "report_min_domains": 3,
             "report_findings": 5,
+            "coverage_mode": "warn",
             "enable_round2": False,
             "verify_max_tasks": 0,
             "enable_worker_continuation": False,
@@ -456,6 +468,14 @@ def _cmd_research(args) -> int:
     report_min_citations = int(defaults["report_min_citations"])
     report_min_domains = int(defaults["report_min_domains"])
     report_findings = int(defaults["report_findings"])
+    coverage_mode = str(defaults["coverage_mode"])
+    if bool(args.coverage_warn) and bool(args.coverage_strict):
+        print("Error: choose only one of --coverage-warn or --coverage-strict", file=sys.stderr)
+        return 2
+    if bool(args.coverage_warn):
+        coverage_mode = "warn"
+    if bool(args.coverage_strict):
+        coverage_mode = "error"
     enable_round2 = bool(defaults["enable_round2"]) and round2_max_tasks > 0
     enable_worker_continuation = bool(defaults["enable_worker_continuation"])
     max_worker_continuations = int(defaults["max_worker_continuations"])
@@ -493,6 +513,7 @@ def _cmd_research(args) -> int:
             report_min_unique_citations_target=max(0, report_min_citations),
             report_min_unique_domains_target=max(0, report_min_domains),
             report_findings_target=max(1, report_findings),
+            coverage_mode=coverage_mode,
         ),
         emitter=EventEmitter(on_event),
     )
@@ -549,6 +570,7 @@ def _cmd_research(args) -> int:
                 "report_min_citations": int(report_min_citations),
                 "report_min_domains": int(report_min_domains),
                 "report_findings": int(report_findings),
+                "coverage_mode": str(coverage_mode),
             },
         }
     )

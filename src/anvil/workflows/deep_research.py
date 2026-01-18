@@ -88,6 +88,7 @@ class DeepResearchConfig:
     report_min_unique_citations_target: int = 0
     report_min_unique_domains_target: int = 0
     report_findings_target: int = 5
+    coverage_mode: str = "warn"  # "warn" or "error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1107,7 +1108,7 @@ class DeepResearchWorkflow:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         issues = self._synthesis_payload_grounding_issues(payload, allowed_urls=allowed_urls)
-        coverage_issues, _stats = self._synthesis_payload_coverage_issues(
+        coverage_issues, stats = self._synthesis_payload_coverage_issues(
             payload,
             allowed_urls=allowed_urls,
             min_unique_citations_target=max(0, int(self.config.report_min_unique_citations_target)),
@@ -1127,7 +1128,7 @@ class DeepResearchWorkflow:
             if repaired is not None:
                 payload = repaired
                 issues = self._synthesis_payload_grounding_issues(payload, allowed_urls=allowed_urls)
-                coverage_issues, _stats = self._synthesis_payload_coverage_issues(
+                coverage_issues, stats = self._synthesis_payload_coverage_issues(
                     payload,
                     allowed_urls=allowed_urls,
                     min_unique_citations_target=max(0, int(self.config.report_min_unique_citations_target)),
@@ -1141,6 +1142,17 @@ class DeepResearchWorkflow:
                 raw=json.dumps(payload, ensure_ascii=False),
                 stage="synthesize",
             )
+
+        if coverage_issues:
+            msg = (
+                "Synthesis did not meet coverage targets. "
+                + ", ".join(coverage_issues[:3])
+                + f" (unique_citations={stats.get('unique_citations')}, domains={stats.get('unique_domains')}, target_per_finding={stats.get('target_per_finding')})"
+            )
+            if str(self.config.coverage_mode or "warn").lower() == "error":
+                raise SynthesisError(msg, raw=json.dumps(payload, ensure_ascii=False), stage="coverage")
+            if self.emitter is not None:
+                self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message=f"WARNING: {msg}"))
 
         return payload
 
