@@ -402,10 +402,34 @@ def _cmd_research(args) -> int:
         mode=get_mode("coding"),
     )
 
+    def _log(stage: str, msg: str) -> None:
+        now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        print(f"{now} [{stage}] {msg}", file=sys.stderr)
+
     def on_event(event) -> None:
         if isinstance(event, ProgressEvent):
             msg = event.message or event.stage
-            print(f"[{event.stage}] {msg}", file=sys.stderr)
+            _log(event.stage, msg)
+            return
+        from common.events import ResearchPlanEvent, WorkerCompletedEvent
+
+        if isinstance(event, ResearchPlanEvent):
+            _log("plan", f"Planned {len(event.tasks)} tasks")
+            for t in event.tasks[:20]:
+                tid = str(t.get("id") or "").strip()
+                q = str(t.get("search_query") or "").strip()
+                _log("plan", f"- {tid}: {q}")
+            return
+        if isinstance(event, WorkerCompletedEvent):
+            dt = ""
+            if event.duration_ms is not None:
+                dt = f" {event.duration_ms}ms"
+            status = "ok" if event.success else "fail"
+            extra = f" searches={event.web_search_calls} citations={event.citations} domains={event.domains}{dt}"
+            if not event.success and event.error:
+                extra += f" error={event.error}"
+            _log("worker", f"{event.task_id} {status}{extra}")
+            return
 
     profile = str(getattr(args, "profile", "quick") or "quick")
 
@@ -618,6 +642,7 @@ def _cmd_research(args) -> int:
     )
     write_meta(data_dir=args.data_dir, session_id=session_id, meta=meta)
 
+    started = time.perf_counter()
     try:
         if resume_id:
             outcome = resume_deep_research(
@@ -694,6 +719,8 @@ def _cmd_research(args) -> int:
         if not args.output:
             print(f"\nSaved: {paths['report_path']}", file=sys.stderr)
             print(f"Session: {session_id}", file=sys.stderr)
+        elapsed_s = time.perf_counter() - started
+        print(f"Elapsed: {elapsed_s:.1f}s", file=sys.stderr)
         return 0
     except Exception as e:
         meta["status"] = "failed"
@@ -725,6 +752,8 @@ def _cmd_research(args) -> int:
         print(f"Error: {e}", file=sys.stderr)
         print(f"Session: {session_id}", file=sys.stderr)
         print(f"Artifacts: {session_dir}", file=sys.stderr)
+        elapsed_s = time.perf_counter() - started
+        print(f"Elapsed: {elapsed_s:.1f}s", file=sys.stderr)
         return 1
 
 

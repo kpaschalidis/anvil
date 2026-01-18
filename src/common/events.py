@@ -13,6 +13,22 @@ class ProgressEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchPlanEvent:
+    tasks: list[dict]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerCompletedEvent:
+    task_id: str
+    success: bool
+    web_search_calls: int = 0
+    citations: int = 0
+    domains: int = 0
+    duration_ms: int | None = None
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class AssistantResponseStartEvent:
     iteration: int
 
@@ -56,6 +72,8 @@ class ErrorEvent:
 
 Event: TypeAlias = (
     ProgressEvent
+    | ResearchPlanEvent
+    | WorkerCompletedEvent
     | AssistantResponseStartEvent
     | AssistantDeltaEvent
     | AssistantMessageEvent

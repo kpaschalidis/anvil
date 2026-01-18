@@ -200,6 +200,7 @@ class ParallelWorkerRunner:
         max_web_search_calls: int | None = None,
         max_web_extract_calls: int | None = None,
         extract_max_chars: int = 20_000,
+        on_result=None,
     ) -> list[WorkerResult]:
         if not tasks:
             return []
@@ -297,8 +298,12 @@ class ParallelWorkerRunner:
                             success=True,
                         )
                     )
+                    if on_result is not None:
+                        on_result(results[-1])
                 except Exception as e:
                     results.append(WorkerResult(task_id=task.id, success=False, error=str(e)))
+                    if on_result is not None:
+                        on_result(results[-1])
 
         return results
 

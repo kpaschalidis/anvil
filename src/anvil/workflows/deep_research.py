@@ -7,7 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from common import llm
-from common.events import EventEmitter, ProgressEvent
+from common.events import EventEmitter, ProgressEvent, ResearchPlanEvent, WorkerCompletedEvent
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerTask
 from anvil.subagents.task_tool import SubagentRunner
 from anvil.subagents.parallel import WorkerResult
@@ -389,6 +389,22 @@ class DeepResearchWorkflow:
             self.emitter.emit(ProgressEvent(stage="plan", current=0, total=None, message="Planning searches"))
 
         plan, planner_raw, planner_error = self._plan(query, max_tasks=self.config.max_tasks, min_tasks=3)
+        if self.emitter is not None:
+            tasks = plan.get("tasks") if isinstance(plan, dict) else None
+            if isinstance(tasks, list):
+                summarized = []
+                for t in tasks:
+                    if not isinstance(t, dict):
+                        continue
+                    summarized.append(
+                        {
+                            "id": t.get("id"),
+                            "search_query": t.get("search_query"),
+                            "instructions": t.get("instructions"),
+                        }
+                    )
+                if summarized:
+                    self.emitter.emit(ResearchPlanEvent(tasks=summarized))
         round1_tasks = self._to_worker_tasks(query, plan)
 
         if self.emitter is not None:
@@ -411,6 +427,7 @@ class DeepResearchWorkflow:
                 max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
             ),
             extract_max_chars=int(self.config.extract_max_chars),
+            on_result=(self._emit_worker_completed if self.emitter is not None else None),
         )
 
         results = self._maybe_continue_workers(
@@ -496,6 +513,7 @@ class DeepResearchWorkflow:
                         max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
                     ),
                     extract_max_chars=int(self.config.extract_max_chars),
+                    on_result=(self._emit_worker_completed if self.emitter is not None else None),
                 )
                 more = self._maybe_continue_workers(
                     round2_tasks,
@@ -553,8 +571,8 @@ class DeepResearchWorkflow:
                             message=f"Running {len(verify_tasks)} verification tasks (max concurrency: {self.config.max_workers})",
                         )
                     )
-                more = self.parallel_runner.spawn_parallel(
-                    verify_tasks,
+                    more = self.parallel_runner.spawn_parallel(
+                        verify_tasks,
                     max_workers=self.config.max_workers,
                     timeout=self.config.worker_timeout_s,
                     allow_writes=False,
@@ -562,8 +580,9 @@ class DeepResearchWorkflow:
                     max_web_extract_calls=(
                         max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
                     ),
-                    extract_max_chars=int(self.config.extract_max_chars),
-                )
+                        extract_max_chars=int(self.config.extract_max_chars),
+                        on_result=(self._emit_worker_completed if self.emitter is not None else None),
+                    )
                 more = self._maybe_continue_workers(
                     verify_tasks,
                     more,
@@ -825,6 +844,7 @@ class DeepResearchWorkflow:
     ) -> list[WorkerResult]:
         if not self.config.enable_worker_continuation:
             return results
+
         if self.config.best_effort:
             return results
         target = max(1, int(self.config.target_web_search_calls))
@@ -886,6 +906,7 @@ class DeepResearchWorkflow:
                 timeout=self.config.worker_timeout_s,
                 allow_writes=False,
                 max_web_search_calls=None,
+                on_result=(self._emit_worker_completed if self.emitter is not None else None),
             )
             for nr in more:
                 prev = results_by_id.get(nr.task_id)
@@ -900,6 +921,23 @@ class DeepResearchWorkflow:
         for r in results:
             ordered.append(results_by_id.get(r.task_id, r))
         return ordered
+
+    def _emit_worker_completed(self, result: WorkerResult) -> None:
+        if self.emitter is None:
+            return
+        urls = set(getattr(result, "citations", ()) or ())
+        domains = {urlparse(u).netloc for u in urls if isinstance(u, str) and u.startswith("http")}
+        self.emitter.emit(
+            WorkerCompletedEvent(
+                task_id=str(getattr(result, "task_id", "") or ""),
+                success=bool(getattr(result, "success", False)),
+                web_search_calls=int(getattr(result, "web_search_calls", 0) or 0),
+                citations=len(urls),
+                domains=len(domains),
+                duration_ms=getattr(result, "duration_ms", None),
+                error=str(getattr(result, "error", "") or ""),
+            )
+        )
 
     def _gap_fill_plan(self, query: str, findings: list[dict[str, Any]]) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
