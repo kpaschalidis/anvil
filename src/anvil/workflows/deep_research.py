@@ -271,6 +271,20 @@ Rules:
 """
 
 
+def _allowed_sources_block(urls: list[str], *, max_items: int = 60) -> str:
+    cleaned = []
+    for u in urls:
+        if isinstance(u, str) and u.startswith("http"):
+            cleaned.append(u)
+    cleaned = cleaned[: max(0, int(max_items))]
+    if not cleaned:
+        return ""
+    lines = ["Allowed citation URLs (you MUST cite ONLY from this list):"]
+    for i, u in enumerate(cleaned, start=1):
+        lines.append(f"- S{i}: {u}")
+    return "\n".join(lines)
+
+
 def _outline_prompt(query: str, findings: list[dict[str, Any]]) -> str:
     return f"""You are a research outline planner.
 
@@ -1216,11 +1230,14 @@ class DeepResearchWorkflow:
         if not issues:
             return None
         prompt = self._synthesis_prompt_with_constraints(query, findings, allowed_urls=allowed_urls)
+        allowed_block = _allowed_sources_block(allowed_urls, max_items=60)
         msg = (
             "Your previous JSON did not meet requirements.\n\n"
             "Problems:\n"
             + "\n".join(f"- {i}" for i in issues[:12])
-            + "\n\nReturn ONLY corrected raw JSON matching the schema (no markdown)."
+            + ("\n\n" + allowed_block if allowed_block else "")
+            + "\n\nReturn ONLY corrected raw JSON matching the schema (no markdown). "
+            + "Cite ONLY from the Allowed citation URLs list."
         )
         resp = llm.completion(
             model=self.config.model,
@@ -1265,7 +1282,11 @@ class DeepResearchWorkflow:
                 + f"- Target >= {min_domains} unique domains across the whole report (if possible).\n"
                 + f"- Target >= {target_per_finding} citation URLs per finding (if possible).\n"
                 + "- Avoid repeating the same citation URLs across multiple findings when alternatives exist.\n"
+                + "- Copy citation URLs EXACTLY; do not invent or modify URLs.\n"
             )
+            allowed_block = _allowed_sources_block(allowed_urls, max_items=60)
+            if allowed_block:
+                prompt = prompt.rstrip() + "\n\n" + allowed_block + "\n"
         return prompt
 
     def _synthesis_payload_grounding_issues(self, payload: dict[str, Any], *, allowed_urls: set[str]) -> list[str]:
