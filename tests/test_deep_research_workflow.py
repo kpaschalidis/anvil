@@ -147,6 +147,69 @@ def test_deep_research_workflow_planning_code_fence_json_parses(monkeypatch):
     assert outcome.plan["tasks"][0]["id"] == "a"
 
 
+def test_deep_research_workflow_synthesis_code_fence_json_parses(monkeypatch):
+    from common import llm as common_llm
+
+    def fake_completion(**kwargs):
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        if "research orchestrator" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "a", "search_query": "q1", "instructions": "i1"},
+                            {"id": "b", "search_query": "q2", "instructions": "i2"},
+                            {"id": "c", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+        if "research synthesizer" in prompt:
+            return Resp(
+                "```json\n"
+                + json.dumps(
+                    {
+                        "title": "REPORT",
+                        "summary_bullets": ["a"],
+                        "findings": [{"claim": "c", "citations": ["https://example.com/a"]}],
+                        "open_questions": [],
+                    }
+                )
+                + "\n```"
+            )
+        return Resp("{}")
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            min_total_domains=0,
+            min_total_citations=1,
+        ),
+        emitter=None,
+    )
+    outcome = wf.run("query")
+    assert outcome.report_markdown.startswith("# REPORT")
+
+
 def test_deep_research_workflow_planning_invalid_json_is_error(monkeypatch):
     from common import llm as common_llm
 

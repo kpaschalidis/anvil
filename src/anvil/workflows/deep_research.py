@@ -18,6 +18,19 @@ class PlanningError(RuntimeError):
         self.raw = raw
 
 
+class SynthesisError(RuntimeError):
+    def __init__(self, message: str, *, raw: str = "", stage: str = "synthesize"):
+        super().__init__(message)
+        self.raw = raw
+        self.stage = stage
+
+
+class DeepResearchRunError(RuntimeError):
+    def __init__(self, message: str, *, outcome: "DeepResearchOutcome | None" = None):
+        super().__init__(message)
+        self.outcome = outcome
+
+
 @dataclass(frozen=True, slots=True)
 class DeepResearchConfig:
     model: str = "gpt-4o"
@@ -63,6 +76,9 @@ class DeepResearchOutcome:
     verify_plan: dict[str, Any] | None = None
     verify_planner_raw: str = ""
     verify_planner_error: str | None = None
+    synthesis_stage: str | None = None
+    synthesis_raw: str = ""
+    synthesis_error: str | None = None
 
 
 def _planning_prompt(query: str, *, max_tasks: int) -> str:
@@ -515,7 +531,41 @@ class DeepResearchWorkflow:
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message="Synthesizing report"))
 
-        report, report_json = self._synthesize_and_render(query, findings, citations)
+        try:
+            report, report_json = self._synthesize_and_render(query, findings, citations)
+        except SynthesisError as e:
+            combined_plan = plan
+            if round2_tasks:
+                combined_plan = (
+                    {"tasks": (plan.get("tasks") or []) + (gap_plan.get("tasks") or [])} if gap_plan else plan
+                )
+            if verify_tasks and isinstance(combined_plan, dict):
+                combined_plan = {
+                    "tasks": (combined_plan.get("tasks") or []) + (verify_plan.get("tasks") or [])  # type: ignore[union-attr]
+                } if verify_plan else combined_plan
+            raise DeepResearchRunError(
+                str(e),
+                outcome=DeepResearchOutcome(
+                    query=query,
+                    plan=combined_plan,
+                    planner_raw=planner_raw,
+                    planner_error=planner_error,
+                    tasks=round1_tasks + round2_tasks + verify_tasks,
+                    results=results,
+                    citations=citations,
+                    report_markdown="",
+                    report_json=None,
+                    gap_plan=gap_plan,
+                    gap_planner_raw=gap_planner_raw,
+                    gap_planner_error=gap_planner_error,
+                    verify_plan=verify_plan,
+                    verify_planner_raw=verify_planner_raw,
+                    verify_planner_error=verify_planner_error,
+                    synthesis_stage=e.stage,
+                    synthesis_raw=e.raw,
+                    synthesis_error=str(e),
+                ),
+            ) from e
 
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="done", current=1, total=1, message="Done"))
@@ -952,28 +1002,49 @@ class DeepResearchWorkflow:
             md, payload = self._multi_pass_synthesize_and_render(query, findings, citations)
             return md, payload
 
-        resp = llm.completion(
-            model=self.config.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": _synthesis_prompt(
-                        query,
-                        findings,
-                        require_quotes=bool(self.config.require_quote_per_claim),
-                    ),
-                }
-            ],
-            temperature=0.2,
-            max_tokens=1200,
+        prompt = _synthesis_prompt(
+            query,
+            findings,
+            require_quotes=bool(self.config.require_quote_per_claim),
         )
-        raw = (resp.choices[0].message.content or "").strip()
         payload: dict[str, Any] | None = None
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            if not self.config.best_effort:
-                raise RuntimeError("Synthesis returned invalid JSON")
+        raw = ""
+        last_err: Exception | None = None
+        for attempt in range(2):
+            resp = llm.completion(
+                model=self.config.model,
+                messages=(
+                    [{"role": "user", "content": prompt}]
+                    if attempt == 0 or not raw
+                    else [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": raw},
+                        {
+                            "role": "user",
+                            "content": "Your previous response was invalid JSON. Return ONLY valid raw JSON matching the schema (no markdown).",
+                        },
+                    ]
+                ),
+                temperature=0.2 if attempt == 0 else 0.0,
+                max_tokens=1200,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            if not raw:
+                last_err = ValueError("empty response")
+                continue
+            try:
+                parsed = self._parse_planner_json(raw)
+                if isinstance(parsed, dict):
+                    payload = parsed
+                    break
+                last_err = ValueError("response was not a JSON object")
+            except Exception as e:
+                last_err = e
+                continue
+
+        if payload is None and not self.config.best_effort:
+            detail = f": {last_err}" if last_err else ""
+            raise SynthesisError(f"Synthesis returned invalid JSON{detail}", raw=raw, stage="synthesize")
 
         md = self._render_from_payload(query=query, findings=findings, citations=citations, payload=(payload or {}))
         return md, payload
@@ -995,12 +1066,12 @@ class DeepResearchWorkflow:
         )
         outline_raw = (outline_resp.choices[0].message.content or "").strip()
         try:
-            outline = json.loads(outline_raw)
+            outline = self._parse_planner_json(outline_raw)
         except Exception as e:
-            raise RuntimeError(f"Outline returned invalid JSON: {e}") from e
+            raise SynthesisError(f"Outline returned invalid JSON: {e}", raw=outline_raw, stage="outline") from e
         sections = outline.get("sections") if isinstance(outline, dict) else None
         if not isinstance(sections, list) or not sections:
-            raise RuntimeError("Outline produced no sections")
+            raise SynthesisError("Outline produced no sections", raw=outline_raw, stage="outline")
 
         # Build evidence per task_id.
         evidence_by_task: dict[str, list[dict[str, Any]]] = {}
@@ -1060,9 +1131,13 @@ class DeepResearchWorkflow:
             )
             sec_raw = (sec_resp.choices[0].message.content or "").strip()
             try:
-                sec_payload = json.loads(sec_raw)
+                sec_payload = self._parse_planner_json(sec_raw)
             except Exception as e:
-                raise RuntimeError(f"Section writer returned invalid JSON for '{sec_title}': {e}") from e
+                raise SynthesisError(
+                    f"Section writer returned invalid JSON for '{sec_title}': {e}",
+                    raw=sec_raw,
+                    stage="section",
+                ) from e
 
             sec_findings = sec_payload.get("findings") if isinstance(sec_payload, dict) else None
             if not isinstance(sec_findings, list) or not sec_findings:
@@ -1108,7 +1183,7 @@ class DeepResearchWorkflow:
                 all_claims.append(it["claim"])
 
         if not combined_findings_out:
-            raise RuntimeError("Multi-pass synthesis produced no supported findings")
+            raise SynthesisError("Multi-pass synthesis produced no supported findings", stage="multi_pass")
 
         # 3) Summarize (title/summary/open questions)
         sum_resp = llm.completion(
@@ -1119,9 +1194,11 @@ class DeepResearchWorkflow:
         )
         sum_raw = (sum_resp.choices[0].message.content or "").strip()
         try:
-            summary_payload = json.loads(sum_raw)
-        except Exception:
-            summary_payload = {}
+            summary_payload = self._parse_planner_json(sum_raw)
+        except Exception as e:
+            raise SynthesisError(f"Summary returned invalid JSON: {e}", raw=sum_raw, stage="summary") from e
+        if not isinstance(summary_payload, dict):
+            raise SynthesisError("Summary returned invalid shape", raw=sum_raw, stage="summary")
 
         # Render using existing renderer by faking payload structure.
         synthesized = {

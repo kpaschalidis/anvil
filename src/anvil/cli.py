@@ -354,7 +354,12 @@ def _cmd_research(args) -> int:
 
     from anvil.sessions.meta import load_meta, write_meta
     from anvil.subagents.parallel import ParallelWorkerRunner
-    from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow, PlanningError
+    from anvil.workflows.deep_research import (
+        DeepResearchConfig,
+        DeepResearchRunError,
+        DeepResearchWorkflow,
+        PlanningError,
+    )
     from anvil.workflows.deep_research_resume import resume_deep_research
     from anvil.workflows.research_artifacts import make_research_session_dir, write_json, write_text
     from anvil.workflows.research_persist import persist_research_outcome
@@ -579,7 +584,24 @@ def _cmd_research(args) -> int:
         meta["status"] = "failed"
         meta["updated_at"] = _utc_ts()
         meta["error"] = str(e)
-        write_json(meta_path, meta)
+        outcome = getattr(e, "outcome", None) if isinstance(e, DeepResearchRunError) else None
+        if outcome is not None:
+            failures = [r for r in outcome.results if not r.success]
+            meta["citations"] = len(outcome.citations)
+            meta["workers"] = {"total": len(outcome.results), "failed": len(failures)}
+            if not args.no_save_artifacts:
+                persist_research_outcome(
+                    data_dir=args.data_dir,
+                    session_id=session_id,
+                    meta=meta,
+                    outcome=outcome,
+                    output_path=None,
+                    save_artifacts=True,
+                )
+            else:
+                write_json(meta_path, meta)
+        else:
+            write_json(meta_path, meta)
         if isinstance(e, PlanningError) and not args.no_save_artifacts:
             write_text(session_dir / "research" / "planner_raw.txt", (e.raw or "") + "\n")
             write_json(session_dir / "research" / "planner_error.json", {"error": str(e)})

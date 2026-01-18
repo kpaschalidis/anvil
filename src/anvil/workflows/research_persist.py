@@ -26,6 +26,8 @@ def persist_research_outcome(
     verify_plan_path = session_dir / "research" / "verify_plan.json"
     verify_planner_raw_path = session_dir / "research" / "verify_planner_raw.txt"
     verify_planner_error_path = session_dir / "research" / "verify_planner_error.json"
+    synthesizer_raw_path = session_dir / "research" / "synthesizer_raw.txt"
+    synthesizer_error_path = session_dir / "research" / "synthesizer_error.json"
     workers_dir = session_dir / "research" / "workers"
     report_path = Path(output_path) if output_path else (session_dir / "research" / "report.md")
     report_json_path = session_dir / "research" / "report.json"
@@ -62,6 +64,20 @@ def persist_research_outcome(
             )
         if verify_planner_error:
             write_json(verify_planner_error_path, {"error": str(verify_planner_error)})
+
+        synthesis_raw = getattr(outcome, "synthesis_raw", "") or ""
+        synthesis_error = getattr(outcome, "synthesis_error", None)
+        synthesis_stage = getattr(outcome, "synthesis_stage", None)
+        if synthesis_raw:
+            write_text(
+                synthesizer_raw_path,
+                synthesis_raw + ("\n" if not synthesis_raw.endswith("\n") else ""),
+            )
+        if synthesis_error or synthesis_stage:
+            payload = {"error": str(synthesis_error) if synthesis_error else ""}
+            if synthesis_stage:
+                payload["stage"] = str(synthesis_stage)
+            write_json(synthesizer_error_path, payload)
         for r in outcome.results:
             write_json(
                 workers_dir / f"{r.task_id}.json",
@@ -86,7 +102,8 @@ def persist_research_outcome(
         if isinstance(report_json, dict):
             write_json(report_json_path, report_json)
 
-    write_text(report_path, outcome.report_markdown + "\n")
+    if (getattr(outcome, "report_markdown", "") or "").strip():
+        write_text(report_path, outcome.report_markdown + "\n")
     write_json(meta_path, meta)
 
     return {
@@ -101,6 +118,8 @@ def persist_research_outcome(
         "verify_plan_path": verify_plan_path,
         "verify_planner_raw_path": verify_planner_raw_path,
         "verify_planner_error_path": verify_planner_error_path,
+        "synthesizer_raw_path": synthesizer_raw_path,
+        "synthesizer_error_path": synthesizer_error_path,
         "workers_dir": workers_dir,
         "report_path": report_path,
         "report_json_path": report_json_path,
