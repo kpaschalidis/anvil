@@ -107,6 +107,7 @@ class DeepResearchOutcome:
     synthesis_stage: str | None = None
     synthesis_raw: str = ""
     synthesis_error: str | None = None
+    synthesis_input: dict[str, Any] | None = None
 
 
 def _planning_prompt(query: str, *, max_tasks: int) -> str:
@@ -559,6 +560,8 @@ class DeepResearchWorkflow:
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message="Synthesizing report"))
 
+        synthesis_input = self._build_synthesis_input(query=query, findings=findings, allowed_urls=citations)
+
         try:
             report, report_json = self._synthesize_and_render(query, findings, citations)
         except SynthesisError as e:
@@ -592,6 +595,7 @@ class DeepResearchWorkflow:
                     synthesis_stage=e.stage,
                     synthesis_raw=e.raw,
                     synthesis_error=str(e),
+                    synthesis_input=synthesis_input,
                 ),
             ) from e
 
@@ -622,6 +626,7 @@ class DeepResearchWorkflow:
             verify_plan=verify_plan,
             verify_planner_raw=verify_planner_raw,
             verify_planner_error=verify_planner_error,
+            synthesis_input=synthesis_input,
         )
 
     def _plan(self, query: str, *, max_tasks: int, min_tasks: int) -> tuple[dict[str, Any], str, str | None]:
@@ -1414,6 +1419,61 @@ class DeepResearchWorkflow:
             lines.append("")
 
         return "\n".join(lines).strip()
+
+    def _build_synthesis_input(
+        self,
+        *,
+        query: str,
+        findings: list[dict[str, Any]],
+        allowed_urls: list[str],
+    ) -> dict[str, Any]:
+        allowed = set(allowed_urls)
+        sources: dict[str, dict[str, Any]] = {}
+        by_task: list[dict[str, Any]] = []
+
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            task_id = str(f.get("task_id") or "").strip()
+            urls = f.get("citations")
+            urls_list = [u for u in urls if isinstance(u, str) and u in allowed] if isinstance(urls, list) else []
+            src = f.get("sources")
+            if isinstance(src, dict):
+                for url, meta in src.items():
+                    if not (isinstance(url, str) and url in allowed and isinstance(meta, dict)):
+                        continue
+                    title = meta.get("title") if isinstance(meta.get("title"), str) else ""
+                    snippet = meta.get("snippet") if isinstance(meta.get("snippet"), str) else ""
+                    sources[url] = {
+                        "url": url,
+                        "domain": urlparse(url).netloc,
+                        "title": (title or "").strip(),
+                        "snippet": sanitize_snippet(snippet),
+                    }
+
+            top_sources = []
+            for u in urls_list:
+                if u in sources:
+                    top_sources.append(sources[u])
+                if len(top_sources) >= 8:
+                    break
+
+            if task_id:
+                by_task.append(
+                    {
+                        "task_id": task_id,
+                        "success": bool(f.get("success", True)),
+                        "web_search_calls": int(f.get("web_search_calls") or 0),
+                        "citations_count": len(urls_list),
+                        "citations": urls_list[:12],
+                        "top_sources": top_sources,
+                        "output": (str(f.get("output") or "")[:4000]),
+                    }
+                )
+
+        allowed_sources = list(sources.values())
+        allowed_sources.sort(key=lambda x: (x.get("domain") or "", x.get("url") or ""))
+        return {"query": query, "allowed_sources": allowed_sources, "tasks": by_task}
 
     def _collect_citations_from_traces(self, results) -> list[str]:
         urls: set[str] = set()

@@ -28,6 +28,7 @@ def persist_research_outcome(
     verify_planner_error_path = session_dir / "research" / "verify_planner_error.json"
     synthesizer_raw_path = session_dir / "research" / "synthesizer_raw.txt"
     synthesizer_error_path = session_dir / "research" / "synthesizer_error.json"
+    synthesis_input_path = session_dir / "research" / "synthesis_input.json"
     workers_dir = session_dir / "research" / "workers"
     report_path = Path(output_path) if output_path else (session_dir / "research" / "report.md")
     report_json_path = session_dir / "research" / "report.json"
@@ -78,6 +79,10 @@ def persist_research_outcome(
             if synthesis_stage:
                 payload["stage"] = str(synthesis_stage)
             write_json(synthesizer_error_path, payload)
+
+        synthesis_input = getattr(outcome, "synthesis_input", None)
+        if isinstance(synthesis_input, dict):
+            write_json(synthesis_input_path, synthesis_input)
         for r in outcome.results:
             write_json(
                 workers_dir / f"{r.task_id}.json",
@@ -120,6 +125,7 @@ def persist_research_outcome(
         "verify_planner_error_path": verify_planner_error_path,
         "synthesizer_raw_path": synthesizer_raw_path,
         "synthesizer_error_path": synthesizer_error_path,
+        "synthesis_input_path": synthesis_input_path,
         "workers_dir": workers_dir,
         "report_path": report_path,
         "report_json_path": report_json_path,

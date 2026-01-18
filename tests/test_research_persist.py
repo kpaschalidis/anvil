@@ -18,6 +18,7 @@ class _Outcome:
         self.plan = {"tasks": []}
         self.results = [_R("a")]
         self.report_markdown = "# R\n"
+        self.synthesis_input = {"query": "q", "allowed_sources": [], "tasks": []}
 
 
 def test_persist_research_outcome_writes_session_layout(tmp_path: Path):
@@ -34,4 +35,4 @@ def test_persist_research_outcome_writes_session_layout(tmp_path: Path):
     assert (tmp_path / "abc123" / "research" / "plan.json").exists()
     assert (tmp_path / "abc123" / "research" / "workers" / "a.json").exists()
     assert (tmp_path / "abc123" / "research" / "report.md").exists()
-
+    assert (tmp_path / "abc123" / "research" / "synthesis_input.json").exists()
