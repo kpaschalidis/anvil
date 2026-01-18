@@ -3,6 +3,7 @@ import json
 import pytest
 
 from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow, PlanningError
+from anvil.workflows.deep_research import sanitize_snippet
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerResult, WorkerTask
 
 
@@ -208,6 +209,20 @@ def test_deep_research_workflow_synthesis_code_fence_json_parses(monkeypatch):
     )
     outcome = wf.run("query")
     assert outcome.report_markdown.startswith("# REPORT")
+
+
+def test_sanitize_snippet_removes_relative_links_and_markdown_nav():
+    raw = (
+        "* [What is MCP?](/docs/getting-started/intro)\n"
+        "##### About MCP.\n"
+        "* [Connect to local MCP servers](/docs/develop/connect-local-servers)\n"
+        "MCP (Model Context Protocol) is an open-source standard for connecting AI applications.\n"
+    )
+    out = sanitize_snippet(raw)
+    assert "/docs/" not in out
+    assert "What is MCP?" in out
+    assert "Connect to local MCP servers" in out
+    assert "MCP (Model Context Protocol) is an open-source standard" in out
 
 
 def test_deep_research_workflow_planning_invalid_json_is_error(monkeypatch):

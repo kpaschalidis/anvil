@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -29,6 +30,33 @@ class DeepResearchRunError(RuntimeError):
     def __init__(self, message: str, *, outcome: "DeepResearchOutcome | None" = None):
         super().__init__(message)
         self.outcome = outcome
+
+
+def sanitize_snippet(text: str) -> str:
+    s = (text or "").strip()
+    if not s:
+        return ""
+
+    # Drop markdown links with relative URLs (e.g. [x](/docs/...)), keep label.
+    s = re.sub(r"\[([^\]]+)\]\((/[^)]+)\)", r"\1", s)
+    # Drop standalone relative URLs in parentheses.
+    s = re.sub(r"\((/[^)]+)\)", "", s)
+
+    cleaned_lines: list[str] = []
+    for line in s.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Strip common markdown formatting prefixes.
+        line = re.sub(r"^\s*#{1,6}\s*", "", line)
+        line = re.sub(r"^\s*[*+-]\s+", "", line)
+        line = re.sub(r"^\s*\d+\.\s+", "", line)
+        if line:
+            cleaned_lines.append(line)
+
+    s = " ".join(cleaned_lines) if cleaned_lines else s
+    s = " ".join(s.split())
+    return s
 
 
 @dataclass(frozen=True, slots=True)
@@ -1248,7 +1276,7 @@ class DeepResearchWorkflow:
                         if isinstance(t, str) and t.strip():
                             merged["title"] = t.strip()
                         if isinstance(snippet, str) and snippet.strip():
-                            merged["snippet"] = snippet.strip()
+                            merged["snippet"] = sanitize_snippet(snippet)
                         if merged:
                             source_meta.setdefault(url, {}).update(merged)
             ev = f.get("evidence")
