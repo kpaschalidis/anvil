@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from anvil.workflows.deep_research import DeepResearchConfig, DeepResearchWorkflow, PlanningError
+from anvil.workflows.deep_research import (
+    DeepResearchConfig,
+    DeepResearchRunError,
+    DeepResearchWorkflow,
+    PlanningError,
+)
 from anvil.workflows.deep_research import sanitize_snippet
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerResult, WorkerTask
 
@@ -223,6 +228,159 @@ def test_sanitize_snippet_removes_relative_links_and_markdown_nav():
     assert "What is MCP?" in out
     assert "Connect to local MCP servers" in out
     assert "MCP (Model Context Protocol) is an open-source standard" in out
+
+
+def test_quick_synthesis_repairs_for_coverage(monkeypatch):
+    from common import llm as common_llm
+
+    calls = {"n": 0}
+
+    def fake_completion(**kwargs):
+        calls["n"] += 1
+
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        if "research orchestrator" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "a", "search_query": "q1", "instructions": "i1"},
+                            {"id": "b", "search_query": "q2", "instructions": "i2"},
+                            {"id": "c", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+
+        # Repair attempt is indicated by our explicit message.
+        if kwargs["messages"][-1]["role"] == "user" and "did not meet requirements" in kwargs["messages"][-1]["content"]:
+            return Resp(
+                json.dumps(
+                    {
+                        "title": "REPORT",
+                        "summary_bullets": ["a"],
+                        "findings": [
+                            {"claim": "c1", "citations": ["https://example.com/a", "https://example.com/b"]},
+                            {"claim": "c2", "citations": ["https://example.com/b", "https://example.com/c"]},
+                            {"claim": "c3", "citations": ["https://example.com/c", "https://example.com/a"]},
+                        ],
+                        "open_questions": [],
+                    }
+                )
+            )
+
+        # First synthesis: valid JSON but too few unique citations.
+        return Resp(
+            json.dumps(
+                {
+                    "title": "REPORT",
+                    "summary_bullets": ["a"],
+                    "findings": [
+                        {"claim": "c1", "citations": ["https://example.com/a"]},
+                        {"claim": "c2", "citations": ["https://example.com/a"]},
+                        {"claim": "c3", "citations": ["https://example.com/a"]},
+                    ],
+                    "open_questions": [],
+                }
+            )
+        )
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            min_total_domains=0,
+            min_total_citations=1,
+            report_min_unique_citations_target=3,
+            report_min_unique_domains_target=1,
+            report_findings_target=3,
+        ),
+        emitter=None,
+    )
+    outcome = wf.run("query")
+    assert outcome.report_markdown.startswith("# REPORT")
+    assert calls["n"] >= 3  # planning + synthesis + repair
+
+
+def test_quick_synthesis_hard_fails_on_unrepairable_grounding(monkeypatch):
+    from common import llm as common_llm
+
+    def fake_completion(**kwargs):
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        if "research orchestrator" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "a", "search_query": "q1", "instructions": "i1"},
+                            {"id": "b", "search_query": "q2", "instructions": "i2"},
+                            {"id": "c", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+        # Synthesis always returns a non-allowed citation.
+        return Resp(
+            json.dumps(
+                {
+                    "title": "REPORT",
+                    "summary_bullets": ["a"],
+                    "findings": [{"claim": "c", "citations": ["https://bad.com/x"]}],
+                    "open_questions": [],
+                }
+            )
+        )
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            min_total_domains=0,
+            min_total_citations=1,
+            report_min_unique_citations_target=1,
+            report_min_unique_domains_target=1,
+            report_findings_target=1,
+        ),
+        emitter=None,
+    )
+    with pytest.raises(DeepResearchRunError):
+        wf.run("query")
 
 
 def test_deep_research_workflow_planning_invalid_json_is_error(monkeypatch):

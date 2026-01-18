@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -398,6 +399,9 @@ def _cmd_research(args) -> int:
             "extract_max_chars": 20000,
             "min_citations": 15,
             "min_domains": 6,
+            "report_min_citations": 15,
+            "report_min_domains": 6,
+            "report_findings": 8,
             "enable_round2": True,
             "verify_max_tasks": 2,
             "enable_worker_continuation": True,
@@ -421,6 +425,9 @@ def _cmd_research(args) -> int:
             "extract_max_chars": 20000,
             "min_citations": 3,
             "min_domains": 3,
+            "report_min_citations": 8,
+            "report_min_domains": 3,
+            "report_findings": 5,
             "enable_round2": False,
             "verify_max_tasks": 0,
             "enable_worker_continuation": False,
@@ -446,6 +453,9 @@ def _cmd_research(args) -> int:
     extract_max_chars = int(_p(args.extract_max_chars, defaults["extract_max_chars"]))
     min_citations = int(_p(args.min_citations, defaults["min_citations"]))
     min_domains = int(_p(args.min_domains, defaults["min_domains"]))
+    report_min_citations = int(defaults["report_min_citations"])
+    report_min_domains = int(defaults["report_min_domains"])
+    report_findings = int(defaults["report_findings"])
     enable_round2 = bool(defaults["enable_round2"]) and round2_max_tasks > 0
     enable_worker_continuation = bool(defaults["enable_worker_continuation"])
     max_worker_continuations = int(defaults["max_worker_continuations"])
@@ -480,6 +490,9 @@ def _cmd_research(args) -> int:
             min_total_citations=max(0, min_citations),
             strict_all=True,
             best_effort=bool(args.best_effort),
+            report_min_unique_citations_target=max(0, report_min_citations),
+            report_min_unique_domains_target=max(0, report_min_domains),
+            report_findings_target=max(1, report_findings),
         ),
         emitter=EventEmitter(on_event),
     )
@@ -533,6 +546,9 @@ def _cmd_research(args) -> int:
                 "best_effort": bool(args.best_effort),
                 "resume": bool(resume_id),
                 "max_attempts": int(args.max_attempts),
+                "report_min_citations": int(report_min_citations),
+                "report_min_domains": int(report_min_domains),
+                "report_findings": int(report_findings),
             },
         }
     )
@@ -560,6 +576,41 @@ def _cmd_research(args) -> int:
                 f"[diagnostics] {r.task_id}: success={r.success} web_search_calls={r.web_search_calls} citations={len(r.citations)} error={r.error or ''}".rstrip(),
                 file=sys.stderr,
             )
+
+        report_urls: set[str] = set()
+        report_payload = getattr(outcome, "report_json", None)
+        if isinstance(report_payload, dict):
+            fs = report_payload.get("findings")
+            if isinstance(fs, list):
+                for it in fs:
+                    if not isinstance(it, dict):
+                        continue
+                    cites = it.get("citations")
+                    if isinstance(cites, list):
+                        for u in cites:
+                            if isinstance(u, str) and u.startswith("http"):
+                                report_urls.add(u)
+                    ev = it.get("evidence")
+                    if isinstance(ev, list):
+                        for e in ev:
+                            if isinstance(e, dict):
+                                u = e.get("url")
+                                if isinstance(u, str) and u.startswith("http"):
+                                    report_urls.add(u)
+        report_domains = {urlparse(u).netloc for u in report_urls}
+        quality = "good" if (len(report_urls) >= report_min_citations and len(report_domains) >= report_min_domains) else "limited"
+        reason = ""
+        if quality != "good":
+            parts = []
+            if len(report_urls) < report_min_citations:
+                parts.append("below citation target")
+            if len(report_domains) < report_min_domains:
+                parts.append("below domain target")
+            reason = f" ({', '.join(parts)})" if parts else ""
+        print(
+            f"[diagnostics] report: findings={report_findings} unique_citations={len(report_urls)} domains={len(report_domains)} quality={quality}{reason}",
+            file=sys.stderr,
+        )
 
         meta["status"] = "completed"
         meta["citations"] = len(outcome.citations)
