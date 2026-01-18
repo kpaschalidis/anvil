@@ -26,6 +26,8 @@
 - [x] Deep profile: round-2 gap-fill (orchestrator→workers→synthesis)
 - [x] Replace per-worker min calls with coverage floors (domains/citations)
 - [ ] Deep profile: optional raw-content reads (deeper grounding)
+- [x] Research: coverage policy flag (quick warn, deep strict)
+- [x] Research: curated source pack (Top-30) from Tavily score/order + diversity caps
 - [x] Quick profile: sanitize snippets (“Why” is readable, no nav/relative links)
 - [x] Quick profile: persist `research/synthesis_input.json` (single debugging artifact)
 - [x] Quick profile: improve synthesis prompt to target 8 citations / 3 domains (warn-only)
