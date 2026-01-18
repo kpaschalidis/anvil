@@ -36,6 +36,7 @@ class DeepResearchConfig:
     max_web_extract_calls: int = 3
     extract_max_chars: int = 20_000
     require_quote_per_claim: bool = False
+    multi_pass_synthesis: bool = False
     enable_round2: bool = False
     round2_max_tasks: int = 3
     verify_max_tasks: int = 0
@@ -193,6 +194,87 @@ Return ONLY valid JSON in this exact shape:
 Rules:
 {rules}
 - Be explicit about uncertainty.
+"""
+
+
+def _outline_prompt(query: str, findings: list[dict[str, Any]]) -> str:
+    return f"""You are a research outline planner.
+
+User query:
+{query}
+
+Worker findings (JSON):
+{json.dumps(findings, ensure_ascii=False)}
+
+Return ONLY valid JSON:
+{{
+  "sections": [
+    {{
+      "id": "s1",
+      "title": "string",
+      "task_ids": ["task1", "task2"]
+    }}
+  ]
+}}
+
+Rules:
+- Provide 4 to 8 sections.
+- Each section must reference 1+ existing task_ids from the worker findings.
+- Prefer a logical structure: context → tools/workflows → pain points → compliance → recommendations → risks.
+"""
+
+
+def _section_findings_prompt(query: str, *, section_title: str, evidence: list[dict[str, Any]]) -> str:
+    return f"""You are a research writer for one section of a report.
+
+User query:
+{query}
+
+Section:
+{section_title}
+
+Evidence (JSON). Quotes MUST be copied from these excerpts exactly:
+{json.dumps(evidence, ensure_ascii=False)}
+
+Return ONLY valid JSON:
+{{
+  "findings": [
+    {{
+      "claim": "string",
+      "evidence": [
+        {{"url": "https://...", "quote": "copied excerpt"}}
+      ]
+    }}
+  ]
+}}
+
+Rules:
+- Provide 3 to 8 findings for this section.
+- Every finding must include 1-3 evidence items.
+- Every evidence.url must appear in the provided Evidence list.
+- Every evidence.quote must be a substring copied from that URL's excerpt.
+"""
+
+
+def _summary_prompt(query: str, *, claims: list[str]) -> str:
+    return f"""You are a research summarizer.
+
+User query:
+{query}
+
+Accepted claims (bullet list):
+{json.dumps(claims, ensure_ascii=False)}
+
+Return ONLY valid JSON:
+{{
+  "title": "string",
+  "summary_bullets": ["string"],
+  "open_questions": ["string"]
+}}
+
+Rules:
+- Write 5 to 10 summary bullets grounded in the claims.
+- Write 3 to 8 open questions for follow-up research.
 """
 
 
@@ -864,6 +946,9 @@ class DeepResearchWorkflow:
         findings: list[dict[str, Any]],
         citations: list[str],
     ) -> str:
+        if self.config.require_quote_per_claim and self.config.multi_pass_synthesis and not self.config.best_effort:
+            return self._multi_pass_synthesize_and_render(query, findings, citations)
+
         resp = llm.completion(
             model=self.config.model,
             messages=[
@@ -1054,6 +1139,331 @@ class DeepResearchWorkflow:
                 meta = source_meta.get(u) or {}
                 title = (meta.get("title") or "").strip()
                 label = f"{title} — {u}" if title else u
+                lines.append(f"- [{n}]({u}) {label}")
+            lines.append("")
+
+        return "\n".join(lines).strip()
+
+    def _multi_pass_synthesize_and_render(
+        self,
+        query: str,
+        findings: list[dict[str, Any]],
+        citations: list[str],
+    ) -> str:
+        allowed_urls = set(citations)
+
+        # 1) Outline
+        outline_resp = llm.completion(
+            model=self.config.model,
+            messages=[{"role": "user", "content": _outline_prompt(query, findings)}],
+            temperature=0.2,
+            max_tokens=800,
+        )
+        outline_raw = (outline_resp.choices[0].message.content or "").strip()
+        try:
+            outline = json.loads(outline_raw)
+        except Exception as e:
+            raise RuntimeError(f"Outline returned invalid JSON: {e}") from e
+        sections = outline.get("sections") if isinstance(outline, dict) else None
+        if not isinstance(sections, list) or not sections:
+            raise RuntimeError("Outline produced no sections")
+
+        # Build evidence per task_id.
+        evidence_by_task: dict[str, list[dict[str, Any]]] = {}
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            task_id = str(f.get("task_id") or "").strip()
+            ev = f.get("evidence")
+            if not task_id or not isinstance(ev, list):
+                continue
+            cleaned = []
+            for item in ev:
+                if not isinstance(item, dict):
+                    continue
+                url = item.get("url")
+                excerpt = item.get("excerpt")
+                if not (isinstance(url, str) and url in allowed_urls and isinstance(excerpt, str) and excerpt.strip()):
+                    continue
+                title = item.get("title")
+                cleaned.append(
+                    {
+                        "url": url,
+                        "title": title if isinstance(title, str) else "",
+                        "excerpt": excerpt.strip(),
+                    }
+                )
+            if cleaned:
+                evidence_by_task[task_id] = cleaned
+
+        # 2) Write sections
+        all_claims: list[str] = []
+        combined_findings_out: list[dict[str, Any]] = []
+
+        for sec in sections[:8]:
+            if not isinstance(sec, dict):
+                continue
+            sec_id = str(sec.get("id") or "").strip()
+            sec_title = str(sec.get("title") or "").strip()
+            task_ids = sec.get("task_ids") or []
+            if not sec_title or not isinstance(task_ids, list) or not task_ids:
+                continue
+            task_ids = [str(t).strip() for t in task_ids if isinstance(t, str) and str(t).strip()]
+            if not task_ids:
+                continue
+
+            evidence: list[dict[str, Any]] = []
+            for tid in task_ids:
+                evidence.extend(evidence_by_task.get(tid, []))
+            if not evidence:
+                continue
+
+            sec_resp = llm.completion(
+                model=self.config.model,
+                messages=[{"role": "user", "content": _section_findings_prompt(query, section_title=sec_title, evidence=evidence)}],
+                temperature=0.2,
+                max_tokens=900,
+            )
+            sec_raw = (sec_resp.choices[0].message.content or "").strip()
+            try:
+                sec_payload = json.loads(sec_raw)
+            except Exception as e:
+                raise RuntimeError(f"Section writer returned invalid JSON for '{sec_title}': {e}") from e
+
+            sec_findings = sec_payload.get("findings") if isinstance(sec_payload, dict) else None
+            if not isinstance(sec_findings, list) or not sec_findings:
+                continue
+
+            # Validate quotes: must come from excerpts we provided.
+            excerpt_map = {item["url"]: item.get("excerpt", "") for item in evidence if isinstance(item, dict) and isinstance(item.get("url"), str)}
+
+            def _norm(s: str) -> str:
+                return " ".join((s or "").split())
+
+            accepted: list[dict[str, Any]] = []
+            for it in sec_findings[:10]:
+                if not isinstance(it, dict):
+                    continue
+                claim = str(it.get("claim") or "").strip()
+                ev_items = it.get("evidence") or []
+                if not claim or not isinstance(ev_items, list) or not ev_items:
+                    continue
+                kept = []
+                for e in ev_items[:3]:
+                    if not isinstance(e, dict):
+                        continue
+                    url = e.get("url")
+                    quote = e.get("quote")
+                    if not (isinstance(url, str) and url in allowed_urls and isinstance(quote, str)):
+                        continue
+                    q = _norm(quote)
+                    if not q:
+                        continue
+                    ex = _norm(str(excerpt_map.get(url) or ""))
+                    if q not in ex:
+                        continue
+                    kept.append({"url": url, "quote": quote.strip()})
+                if not kept:
+                    continue
+                accepted.append({"claim": claim, "evidence": kept})
+
+            if not accepted:
+                continue
+            combined_findings_out.extend(accepted)
+            for it in accepted:
+                all_claims.append(it["claim"])
+
+        if not combined_findings_out:
+            raise RuntimeError("Multi-pass synthesis produced no supported findings")
+
+        # 3) Summarize (title/summary/open questions)
+        sum_resp = llm.completion(
+            model=self.config.model,
+            messages=[{"role": "user", "content": _summary_prompt(query, claims=all_claims)}],
+            temperature=0.2,
+            max_tokens=500,
+        )
+        sum_raw = (sum_resp.choices[0].message.content or "").strip()
+        try:
+            summary_payload = json.loads(sum_raw)
+        except Exception:
+            summary_payload = {}
+
+        # Render using existing renderer by faking payload structure.
+        synthesized = {
+            "title": summary_payload.get("title") or "Deep Research Report",
+            "summary_bullets": summary_payload.get("summary_bullets") or [],
+            "findings": combined_findings_out,
+            "open_questions": summary_payload.get("open_questions") or [],
+        }
+
+        # Reuse existing rendering logic by temporarily substituting payload-derived fields.
+        # This keeps citation numbering and source list behavior consistent.
+        return self._render_from_payload(
+            query=query,
+            findings=findings,
+            citations=citations,
+            payload=synthesized,
+        )
+
+    def _render_from_payload(
+        self,
+        *,
+        query: str,
+        findings: list[dict[str, Any]],
+        citations: list[str],
+        payload: dict[str, Any],
+    ) -> str:
+        title = str(payload.get("title") or "Deep Research Report")
+        summary = payload.get("summary_bullets") or []
+        findings_out = payload.get("findings") or []
+        open_qs = payload.get("open_questions") or []
+
+        allowed = set(citations)
+        source_meta: dict[str, dict[str, str]] = {}
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            m = f.get("sources")
+            if isinstance(m, dict):
+                for url, meta in m.items():
+                    if isinstance(url, str) and url.startswith("http") and isinstance(meta, dict):
+                        merged: dict[str, str] = {}
+                        t = meta.get("title")
+                        snippet = meta.get("snippet")
+                        if isinstance(t, str) and t.strip():
+                            merged["title"] = t.strip()
+                        if isinstance(snippet, str) and snippet.strip():
+                            merged["snippet"] = snippet.strip()
+                        if merged:
+                            source_meta.setdefault(url, {}).update(merged)
+            ev = f.get("evidence")
+            if isinstance(ev, list):
+                for item in ev:
+                    if not isinstance(item, dict):
+                        continue
+                    url = item.get("url")
+                    if not (isinstance(url, str) and url.startswith("http")):
+                        continue
+                    merged: dict[str, str] = {}
+                    t = item.get("title")
+                    excerpt = item.get("excerpt")
+                    if isinstance(t, str) and t.strip():
+                        merged["title"] = t.strip()
+                    if isinstance(excerpt, str) and excerpt.strip():
+                        merged["excerpt"] = excerpt.strip()
+                    if merged:
+                        source_meta.setdefault(url, {}).update(merged)
+
+        evidence_text: dict[str, str] = {}
+        if self.config.require_quote_per_claim:
+            for url, meta in source_meta.items():
+                ex = meta.get("excerpt")
+                if isinstance(ex, str) and ex.strip():
+                    evidence_text[url] = ex
+
+        citation_numbers: dict[str, int] = {}
+        ordered_urls: list[str] = []
+
+        def _num(url: str) -> int:
+            if url not in citation_numbers:
+                citation_numbers[url] = len(citation_numbers) + 1
+                ordered_urls.append(url)
+            return citation_numbers[url]
+
+        def _why(url: str) -> str:
+            meta = source_meta.get(url) or {}
+            snippet = (meta.get("excerpt") or meta.get("snippet") or "").strip()
+            t = (meta.get("title") or "").strip()
+            if snippet:
+                s = " ".join(snippet.split())
+                return s[:220] + ("…" if len(s) > 220 else "")
+            if t:
+                return t
+            return url.split("/")[2] if url.startswith("http") else url
+
+        def _norm(s: str) -> str:
+            return " ".join((s or "").split())
+
+        def _quote_ok(url: str, quote: str) -> bool:
+            q = _norm(quote)
+            if not q:
+                return False
+            txt = _norm(evidence_text.get(url, ""))
+            return q in txt
+
+        rendered_findings: list[str] = []
+        if isinstance(findings_out, list):
+            for it in findings_out:
+                if not isinstance(it, dict):
+                    continue
+                claim = str(it.get("claim") or "").strip()
+                if not claim:
+                    continue
+                if self.config.require_quote_per_claim:
+                    ev = it.get("evidence") or []
+                    if not isinstance(ev, list):
+                        ev = []
+                    ev_items = []
+                    for e in ev:
+                        if not isinstance(e, dict):
+                            continue
+                        url = e.get("url")
+                        quote = e.get("quote")
+                        if not (isinstance(url, str) and url in allowed and isinstance(quote, str)):
+                            continue
+                        if not _quote_ok(url, quote):
+                            continue
+                        ev_items.append({"url": url, "quote": quote.strip()})
+                    if not ev_items:
+                        continue
+                    urls = [x["url"] for x in ev_items]
+                    nums = [_num(u) for u in urls]
+                    links = "".join(f"[{n}]" for n in nums[:3])
+                    primary = ev_items[0]
+                    rendered_findings.append(f"- {claim} {links}")
+                    rendered_findings.append(f"  - Why: {_why(primary['url'])}")
+                    rendered_findings.append(f"  - Quote: “{_norm(primary['quote'])}”")
+                else:
+                    cites = it.get("citations") or []
+                    if not isinstance(cites, list):
+                        cites = []
+                    cites = [c for c in cites if isinstance(c, str) and c in allowed]
+                    if not cites:
+                        continue
+                    nums = [_num(u) for u in cites]
+                    links = "".join(f"[{n}]" for n in nums[:3])
+                    primary = cites[0]
+                    rendered_findings.append(f"- {claim} {links}")
+                    rendered_findings.append(f"  - Why: {_why(primary)}")
+
+        lines: list[str] = [f"# {title}", ""]
+        if isinstance(summary, list) and summary:
+            lines.append("## Summary")
+            for b in summary[:12]:
+                if isinstance(b, str) and b.strip():
+                    lines.append(f"- {b.strip()}")
+            lines.append("")
+
+        if rendered_findings:
+            lines.append("## Findings")
+            lines.extend(rendered_findings)
+            lines.append("")
+
+        if isinstance(open_qs, list) and open_qs:
+            lines.append("## Open Questions")
+            for q in open_qs[:12]:
+                if isinstance(q, str) and q.strip():
+                    lines.append(f"- {q.strip()}")
+            lines.append("")
+
+        if ordered_urls:
+            lines.append("## Sources")
+            for u in ordered_urls:
+                n = citation_numbers[u]
+                meta = source_meta.get(u) or {}
+                t = (meta.get("title") or "").strip()
+                label = f"{t} — {u}" if t else u
                 lines.append(f"- [{n}]({u}) {label}")
             lines.append("")
 

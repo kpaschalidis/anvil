@@ -399,6 +399,7 @@ def _cmd_research(args) -> int:
             "max_worker_continuations": 2,
             "enable_deep_read": True,
             "require_quote_per_claim": True,
+            "multi_pass_synthesis": True,
         }
     else:
         defaults = {
@@ -421,6 +422,7 @@ def _cmd_research(args) -> int:
             "max_worker_continuations": 0,
             "enable_deep_read": False,
             "require_quote_per_claim": False,
+            "multi_pass_synthesis": False,
         }
 
     max_workers = int(_p(args.max_workers, defaults["max_workers"]))
@@ -444,6 +446,7 @@ def _cmd_research(args) -> int:
     max_worker_continuations = int(defaults["max_worker_continuations"])
     enable_deep_read = bool(defaults["enable_deep_read"])
     require_quote_per_claim = bool(defaults["require_quote_per_claim"])
+    multi_pass_synthesis = bool(defaults["multi_pass_synthesis"])
 
     workflow = DeepResearchWorkflow(
         subagent_runner=runtime.subagent_runner,
@@ -464,6 +467,7 @@ def _cmd_research(args) -> int:
             max_web_extract_calls=max_web_extract_calls,
             extract_max_chars=extract_max_chars,
             require_quote_per_claim=require_quote_per_claim,
+            multi_pass_synthesis=multi_pass_synthesis,
             min_total_domains=min_domains,
             enable_worker_continuation=enable_worker_continuation,
             max_worker_continuations=max_worker_continuations,
@@ -513,6 +517,7 @@ def _cmd_research(args) -> int:
                 "extract_max_chars": extract_max_chars,
                 "enable_deep_read": bool(enable_deep_read),
                 "require_quote_per_claim": bool(require_quote_per_claim),
+                "multi_pass_synthesis": bool(multi_pass_synthesis),
                 "enable_worker_continuation": bool(enable_worker_continuation),
                 "max_worker_continuations": int(max_worker_continuations),
                 "round2_max_tasks": round2_max_tasks,
