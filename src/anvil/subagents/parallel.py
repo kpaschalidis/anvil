@@ -61,12 +61,24 @@ def _summarize_web_search_calls(tool_calls: list[ToolCallRecord]) -> list[dict[s
         if not isinstance(items, list):
             items = []
         urls: list[str] = []
+        results: list[dict[str, Any]] = []
         for it in items:
             if not isinstance(it, dict):
                 continue
             u = it.get("url")
             if isinstance(u, str) and u.startswith("http"):
                 urls.append(u)
+                entry: dict[str, Any] = {"url": u}
+                title = it.get("title")
+                if isinstance(title, str) and title.strip():
+                    entry["title"] = title.strip()
+                score = it.get("score")
+                if isinstance(score, (int, float)):
+                    entry["score"] = float(score)
+                snippet = it.get("content") or it.get("snippet") or it.get("description")
+                if isinstance(snippet, str) and snippet.strip():
+                    entry["snippet"] = snippet.strip()[:500]
+                results.append(entry)
         out.append(
             {
                 "success": True,
@@ -76,6 +88,7 @@ def _summarize_web_search_calls(tool_calls: list[ToolCallRecord]) -> list[dict[s
                 "has_more": payload.get("has_more"),
                 "result_count": len(items),
                 "urls": urls,
+                "results": results,
                 "duration_ms": getattr(rec, "duration_ms", None),
             }
         )

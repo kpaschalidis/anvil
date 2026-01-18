@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerTask
+from anvil.subagents.parallel import _summarize_web_search_calls
 from anvil.subagents.registry import AgentRegistry
 from anvil.subagents.task_tool import SubagentRunner
 from anvil.tools import ToolRegistry
@@ -33,6 +34,47 @@ class _Choice:
 class _Resp:
     def __init__(self, msg: _Msg):
         self.choices = [_Choice(msg)]
+
+
+def test_summarize_web_search_calls_includes_scores_and_snippets():
+    from anvil.subagents.trace import ToolCallRecord
+
+    tool_calls = [
+        ToolCallRecord(
+            tool_name="web_search",
+            args={"query": "q"},
+            result={
+                "success": True,
+                "result": {
+                    "query": "q",
+                    "page": 1,
+                    "page_size": 2,
+                    "has_more": False,
+                    "results": [
+                        {
+                            "url": "https://e/1",
+                            "title": "t1",
+                            "score": 0.9,
+                            "content": "s1",
+                        },
+                        {
+                            "url": "https://e/2",
+                            "title": "t2",
+                            "score": 0.8,
+                            "content": "s2",
+                        },
+                    ],
+                },
+            },
+            duration_ms=12,
+        )
+    ]
+
+    out = _summarize_web_search_calls(tool_calls)
+    assert out and out[0]["success"] is True
+    assert out[0]["urls"] == ["https://e/1", "https://e/2"]
+    assert out[0]["results"][0]["score"] == 0.9
+    assert out[0]["results"][0]["snippet"] == "s1"
 
 
 def test_subagent_runner_blocks_disallowed_tool_execution(tmp_path: Path):
