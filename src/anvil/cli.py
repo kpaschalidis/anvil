@@ -92,6 +92,8 @@ def _build_parser() -> argparse.ArgumentParser:
     research.add_argument("--target-web-search-calls", type=int, default=None, help="Target web_search calls per worker (guidance only)")
     research.add_argument("--min-web-search-calls", type=int, default=None, help="(Deprecated) Alias for --target-web-search-calls")
     research.add_argument("--max-web-search-calls", type=int, default=None, help="Max web_search calls per worker")
+    research.add_argument("--max-web-extract-calls", type=int, default=None, help="Max web_extract calls per worker (deep read)")
+    research.add_argument("--extract-max-chars", type=int, default=None, help="Max chars returned per web_extract call")
     research.add_argument("--min-domains", type=int, default=None, help="Min unique domains across all citations")
     research.add_argument("--round2-max-tasks", type=int, default=None, help="Max follow-up tasks in deep profile")
     research.add_argument("--min-citations", type=int, default=None)
@@ -386,11 +388,15 @@ def _cmd_research(args) -> int:
             "max_pages": 4,
             "target_web_search_calls": 4,
             "max_web_search_calls": 8,
+            "max_web_extract_calls": 3,
+            "extract_max_chars": 20000,
             "min_citations": 15,
             "min_domains": 6,
             "enable_round2": True,
             "enable_worker_continuation": True,
             "max_worker_continuations": 2,
+            "enable_deep_read": True,
+            "require_quote_per_claim": True,
         }
     else:
         defaults = {
@@ -403,11 +409,15 @@ def _cmd_research(args) -> int:
             "max_pages": 2,
             "target_web_search_calls": 2,
             "max_web_search_calls": 4,
+            "max_web_extract_calls": 0,
+            "extract_max_chars": 20000,
             "min_citations": 3,
             "min_domains": 3,
             "enable_round2": False,
             "enable_worker_continuation": False,
             "max_worker_continuations": 0,
+            "enable_deep_read": False,
+            "require_quote_per_claim": False,
         }
 
     max_workers = int(_p(args.max_workers, defaults["max_workers"]))
@@ -421,11 +431,15 @@ def _cmd_research(args) -> int:
         _p(_p(args.target_web_search_calls, args.min_web_search_calls), defaults["target_web_search_calls"])
     )
     max_web_search_calls = int(_p(args.max_web_search_calls, defaults["max_web_search_calls"]))
+    max_web_extract_calls = int(_p(args.max_web_extract_calls, defaults["max_web_extract_calls"]))
+    extract_max_chars = int(_p(args.extract_max_chars, defaults["extract_max_chars"]))
     min_citations = int(_p(args.min_citations, defaults["min_citations"]))
     min_domains = int(_p(args.min_domains, defaults["min_domains"]))
     enable_round2 = bool(defaults["enable_round2"]) and round2_max_tasks > 0
     enable_worker_continuation = bool(defaults["enable_worker_continuation"])
     max_worker_continuations = int(defaults["max_worker_continuations"])
+    enable_deep_read = bool(defaults["enable_deep_read"])
+    require_quote_per_claim = bool(defaults["require_quote_per_claim"])
 
     workflow = DeepResearchWorkflow(
         subagent_runner=runtime.subagent_runner,
@@ -441,6 +455,10 @@ def _cmd_research(args) -> int:
             max_pages=max_pages,
             target_web_search_calls=target_web_search_calls,
             max_web_search_calls=max_web_search_calls,
+            enable_deep_read=enable_deep_read,
+            max_web_extract_calls=max_web_extract_calls,
+            extract_max_chars=extract_max_chars,
+            require_quote_per_claim=require_quote_per_claim,
             min_total_domains=min_domains,
             enable_worker_continuation=enable_worker_continuation,
             max_worker_continuations=max_worker_continuations,
@@ -486,6 +504,10 @@ def _cmd_research(args) -> int:
                 "max_pages": max_pages,
                 "target_web_search_calls": target_web_search_calls,
                 "max_web_search_calls": max_web_search_calls,
+                "max_web_extract_calls": max_web_extract_calls,
+                "extract_max_chars": extract_max_chars,
+                "enable_deep_read": bool(enable_deep_read),
+                "require_quote_per_claim": bool(require_quote_per_claim),
                 "enable_worker_continuation": bool(enable_worker_continuation),
                 "max_worker_continuations": int(max_worker_continuations),
                 "round2_max_tasks": round2_max_tasks,

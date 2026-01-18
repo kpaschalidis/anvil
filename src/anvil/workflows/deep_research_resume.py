@@ -30,6 +30,12 @@ def _load_existing_worker_results(workers_dir: Path) -> dict[str, WorkerResult]:
             citations=tuple(payload.get("citations") or ()),
             sources={k: v for k, v in sources.items() if isinstance(k, str) and isinstance(v, dict)},
             web_search_calls=int(payload.get("web_search_calls") or 0),
+            web_search_trace=tuple(payload.get("web_search_trace") or ()),
+            web_extract_calls=int(payload.get("web_extract_calls") or 0),
+            web_extract_trace=tuple(payload.get("web_extract_trace") or ()),
+            evidence=tuple(payload.get("evidence") or ()),
+            iterations=int(payload.get("iterations") or 0),
+            duration_ms=payload.get("duration_ms"),
             success=bool(payload.get("success") is True),
             error=(str(payload.get("error")) if payload.get("error") else None),
         )

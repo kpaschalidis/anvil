@@ -30,6 +30,12 @@ class DeepResearchConfig:
     target_web_search_calls: int = 2
     max_web_search_calls: int = 6
     min_total_domains: int = 3
+    enable_worker_continuation: bool = False
+    max_worker_continuations: int = 0
+    enable_deep_read: bool = False
+    max_web_extract_calls: int = 3
+    extract_max_chars: int = 20_000
+    require_quote_per_claim: bool = False
     enable_round2: bool = False
     round2_max_tasks: int = 3
     require_citations: bool = True
@@ -108,7 +114,30 @@ Rules:
 """
 
 
-def _synthesis_prompt(query: str, findings: list[dict[str, Any]]) -> str:
+def _synthesis_prompt(query: str, findings: list[dict[str, Any]], *, require_quotes: bool) -> str:
+    if require_quotes:
+        findings_shape = """{
+      "claim": "string",
+      "evidence": [
+        {
+          "url": "https://...",
+          "quote": "A short direct quote or excerpt copied from the extracted page content."
+        }
+      ]
+    }"""
+        rules = """- Every `evidence[].url` MUST be a URL present in the worker evidence/extracted sources.
+- Every `evidence[].quote` MUST be copied from that URL's extracted content (no paraphrased “quotes”).
+- Base claims only on information supported by the quotes + sources.
+- If you cannot support a claim with evidence, omit it."""
+    else:
+        findings_shape = """{
+      "claim": "string",
+      "citations": ["https://..."]
+    }"""
+        rules = """- Every item in `findings[].citations` MUST be a URL present in the worker findings citations.
+- Base claims only on information supported by the cited sources (use source titles/snippets in the worker findings).
+- If you cannot support a claim with citations, omit it."""
+
     return f"""You are a research synthesizer.
 
 User query:
@@ -122,18 +151,13 @@ Return ONLY valid JSON in this exact shape:
   "title": "string",
   "summary_bullets": ["string"],
   "findings": [
-    {{
-      "claim": "string",
-      "citations": ["https://..."]
-    }}
+    {findings_shape}
   ],
   "open_questions": ["string"]
 }}
 
 Rules:
-- Every item in `findings[].citations` MUST be a URL present in the worker findings citations.
-- Base claims only on information supported by the cited sources (use source titles/snippets in the worker findings).
-- If you cannot support a claim with citations, omit it.
+{rules}
 - Be explicit about uncertainty.
 """
 
@@ -179,10 +203,25 @@ class DeepResearchWorkflow:
             timeout=self.config.worker_timeout_s,
             allow_writes=False,
             max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
+            max_web_extract_calls=(
+                max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
+            ),
+            extract_max_chars=int(self.config.extract_max_chars),
+        )
+
+        results = self._maybe_continue_workers(
+            round1_tasks,
+            results,
+            stage_label="workers",
+            message_prefix="Continuing round-1 tasks",
         )
 
         results = self._apply_worker_invariants(results)
-        citations = self._collect_citations_from_traces(results)
+        citations = (
+            self._collect_evidence_urls(results)
+            if self.config.enable_deep_read
+            else self._collect_citations_from_traces(results)
+        )
         domains = self._collect_domains(citations)
         failures = [r for r in results if not r.success]
 
@@ -216,7 +255,9 @@ class DeepResearchWorkflow:
                     "error": r.error,
                     "citations": list(r.citations),
                     "sources": getattr(r, "sources", {}) or {},
+                    "evidence": list(getattr(r, "evidence", ()) or ()),
                     "web_search_calls": int(r.web_search_calls or 0),
+                    "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
                 }
             )
 
@@ -247,10 +288,24 @@ class DeepResearchWorkflow:
                     timeout=self.config.worker_timeout_s,
                     allow_writes=False,
                     max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
+                    max_web_extract_calls=(
+                        max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
+                    ),
+                    extract_max_chars=int(self.config.extract_max_chars),
+                )
+                more = self._maybe_continue_workers(
+                    round2_tasks,
+                    more,
+                    stage_label="workers",
+                    message_prefix="Continuing round-2 tasks",
                 )
                 more = self._apply_worker_invariants(more)
                 results = list(results) + list(more)
-                citations = self._collect_citations_from_traces(results)
+                citations = (
+                    self._collect_evidence_urls(results)
+                    if self.config.enable_deep_read
+                    else self._collect_citations_from_traces(results)
+                )
                 failures = [r for r in results if not r.success]
                 if self.config.strict_all and failures:
                     raise RuntimeError(
@@ -267,7 +322,9 @@ class DeepResearchWorkflow:
                             "error": r.error,
                             "citations": list(r.citations),
                             "sources": getattr(r, "sources", {}) or {},
+                            "evidence": list(getattr(r, "evidence", ()) or ()),
                             "web_search_calls": int(r.web_search_calls or 0),
+                            "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
                         }
                     )
 
@@ -382,6 +439,8 @@ class DeepResearchWorkflow:
         sources = dict(getattr(a, "sources", {}) or {})
         sources.update(dict(getattr(b, "sources", {}) or {}))
         trace = tuple((getattr(a, "web_search_trace", ()) or ()) + (getattr(b, "web_search_trace", ()) or ()))
+        extract_trace = tuple((getattr(a, "web_extract_trace", ()) or ()) + (getattr(b, "web_extract_trace", ()) or ()))
+        evidence = tuple((getattr(a, "evidence", ()) or ()) + (getattr(b, "evidence", ()) or ()))
         output_parts = []
         if (a.output or "").strip():
             output_parts.append(a.output.strip())
@@ -397,6 +456,9 @@ class DeepResearchWorkflow:
             sources=sources,
             web_search_calls=int(getattr(a, "web_search_calls", 0) or 0) + int(getattr(b, "web_search_calls", 0) or 0),
             web_search_trace=trace,
+            web_extract_calls=int(getattr(a, "web_extract_calls", 0) or 0) + int(getattr(b, "web_extract_calls", 0) or 0),
+            web_extract_trace=extract_trace,
+            evidence=evidence,
             iterations=int(getattr(a, "iterations", 0) or 0) + int(getattr(b, "iterations", 0) or 0),
             duration_ms=duration_ms,
             success=a.success and b.success,
@@ -618,11 +680,21 @@ class DeepResearchWorkflow:
             instructions = str(t.get("instructions") or "").strip()
             if not search_query:
                 continue
+            deep_read = bool(self.config.enable_deep_read)
+            read_block = ""
+            if deep_read:
+                read_block = (
+                    "\nDeep mode: after you find promising URLs, you MUST call `web_extract` on the best sources.\n"
+                    f"- Extract up to {max(1, int(self.config.max_web_extract_calls))} pages.\n"
+                    f"- Use `max_chars={max(1, int(self.config.extract_max_chars))}`.\n"
+                    "- Prefer diverse, reputable domains and avoid duplicates.\n"
+                )
             prompt = (
                 "Use the `web_search` tool to gather sources and extract key facts.\n"
                 f"Aim for ~{max(1, int(self.config.target_web_search_calls))} `web_search` calls.\n"
                 f"Use pagination (page=1..{max(1, int(self.config.max_pages))}) and page_size={max(1, int(self.config.page_size))}.\n"
                 f"Aim for 2+ distinct query variants (refine queries as you learn).\n"
+                f"{read_block}"
                 "Stop searching once you have enough evidence and then write a concise note.\n\n"
                 f"Search query: {search_query}\n\n"
                 f"Instructions: {instructions}\n\n"
@@ -656,7 +728,16 @@ class DeepResearchWorkflow:
     ) -> str:
         resp = llm.completion(
             model=self.config.model,
-            messages=[{"role": "user", "content": _synthesis_prompt(query, findings)}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": _synthesis_prompt(
+                        query,
+                        findings,
+                        require_quotes=bool(self.config.require_quote_per_claim),
+                    ),
+                }
+            ],
             temperature=0.2,
             max_tokens=1200,
         )
@@ -691,6 +772,30 @@ class DeepResearchWorkflow:
                             merged["snippet"] = snippet.strip()
                         if merged:
                             source_meta.setdefault(url, {}).update(merged)
+            ev = f.get("evidence")
+            if isinstance(ev, list):
+                for item in ev:
+                    if not isinstance(item, dict):
+                        continue
+                    url = item.get("url")
+                    if not (isinstance(url, str) and url.startswith("http")):
+                        continue
+                    merged: dict[str, str] = {}
+                    title = item.get("title")
+                    excerpt = item.get("excerpt")
+                    if isinstance(title, str) and title.strip():
+                        merged["title"] = title.strip()
+                    if isinstance(excerpt, str) and excerpt.strip():
+                        merged["excerpt"] = excerpt.strip()
+                    if merged:
+                        source_meta.setdefault(url, {}).update(merged)
+
+        evidence_text: dict[str, str] = {}
+        if self.config.require_quote_per_claim:
+            for url, meta in source_meta.items():
+                ex = meta.get("excerpt")
+                if isinstance(ex, str) and ex.strip():
+                    evidence_text[url] = ex
 
         rendered_findings: list[str] = []
         citation_numbers: dict[str, int] = {}
@@ -704,7 +809,7 @@ class DeepResearchWorkflow:
 
         def _why(url: str) -> str:
             meta = source_meta.get(url) or {}
-            snippet = (meta.get("snippet") or "").strip()
+            snippet = (meta.get("excerpt") or meta.get("snippet") or "").strip()
             title = (meta.get("title") or "").strip()
             if snippet:
                 s = " ".join(snippet.split())
@@ -713,26 +818,65 @@ class DeepResearchWorkflow:
                 return title
             return url.split("/")[2] if url.startswith("http") else url
 
+        def _norm(s: str) -> str:
+            return " ".join((s or "").split())
+
+        def _quote_ok(url: str, quote: str) -> bool:
+            q = _norm(quote)
+            if not q:
+                return False
+            txt = _norm(evidence_text.get(url, ""))
+            return q in txt
+
         if isinstance(findings_out, list):
             for it in findings_out:
                 if not isinstance(it, dict):
                     continue
                 claim = str(it.get("claim") or "").strip()
-                cites = it.get("citations") or []
                 if not claim:
                     continue
-                if not isinstance(cites, list):
-                    cites = []
-                cites = [c for c in cites if isinstance(c, str) and c in allowed]
-                if not cites:
-                    if self.config.best_effort:
-                        continue
-                    raise RuntimeError(f"Synthesis produced an uncited claim: {claim}")
-                nums = [_num(u) for u in cites]
-                links = "".join(f"[{n}]" for n in nums[:3])
-                primary = cites[0]
-                rendered_findings.append(f"- {claim} {links}")
-                rendered_findings.append(f"  - Why: {_why(primary)}")
+                if self.config.require_quote_per_claim:
+                    ev = it.get("evidence") or []
+                    if not isinstance(ev, list):
+                        ev = []
+                    ev_items = []
+                    for e in ev:
+                        if not isinstance(e, dict):
+                            continue
+                        url = e.get("url")
+                        quote = e.get("quote")
+                        if not (isinstance(url, str) and url in allowed and isinstance(quote, str)):
+                            continue
+                        if not _quote_ok(url, quote):
+                            continue
+                        ev_items.append({"url": url, "quote": quote.strip()})
+
+                    if not ev_items:
+                        if self.config.best_effort:
+                            continue
+                        raise RuntimeError(f"Synthesis produced an unsupported claim: {claim}")
+
+                    urls = [x["url"] for x in ev_items]
+                    nums = [_num(u) for u in urls]
+                    links = "".join(f"[{n}]" for n in nums[:3])
+                    primary = ev_items[0]
+                    rendered_findings.append(f"- {claim} {links}")
+                    rendered_findings.append(f"  - Why: {_why(primary['url'])}")
+                    rendered_findings.append(f"  - Quote: “{_norm(primary['quote'])}”")
+                else:
+                    cites = it.get("citations") or []
+                    if not isinstance(cites, list):
+                        cites = []
+                    cites = [c for c in cites if isinstance(c, str) and c in allowed]
+                    if not cites:
+                        if self.config.best_effort:
+                            continue
+                        raise RuntimeError(f"Synthesis produced an uncited claim: {claim}")
+                    nums = [_num(u) for u in cites]
+                    links = "".join(f"[{n}]" for n in nums[:3])
+                    primary = cites[0]
+                    rendered_findings.append(f"- {claim} {links}")
+                    rendered_findings.append(f"  - Why: {_why(primary)}")
 
         if self.config.require_citations and not self.config.best_effort and not rendered_findings:
             raise RuntimeError("Synthesis produced no cited findings")
@@ -785,6 +929,18 @@ class DeepResearchWorkflow:
                     urls.add(u)
         return sorted(urls)
 
+    def _collect_evidence_urls(self, results) -> list[str]:
+        urls: set[str] = set()
+        for r in results:
+            ev = getattr(r, "evidence", ()) or ()
+            for item in ev:
+                if not isinstance(item, dict):
+                    continue
+                u = item.get("url")
+                if isinstance(u, str) and u.startswith("http"):
+                    urls.add(u)
+        return sorted(urls)
+
     def _collect_domains(self, citations: list[str]) -> list[str]:
         domains: set[str] = set()
         for u in citations:
@@ -812,7 +968,7 @@ class DeepResearchWorkflow:
             if not r.success:
                 updated.append(r)
                 continue
-            if len(getattr(r, "citations", ()) or ()) < 1:
+            if self.config.enable_deep_read and len(getattr(r, "evidence", ()) or ()) < 1:
                 updated.append(
                     WorkerResult(
                         task_id=r.task_id,
@@ -821,6 +977,28 @@ class DeepResearchWorkflow:
                         sources=getattr(r, "sources", {}) or {},
                         web_search_calls=r.web_search_calls,
                         web_search_trace=getattr(r, "web_search_trace", ()) or (),
+                        web_extract_calls=int(getattr(r, "web_extract_calls", 0) or 0),
+                        web_extract_trace=getattr(r, "web_extract_trace", ()) or (),
+                        evidence=getattr(r, "evidence", ()) or (),
+                        iterations=int(getattr(r, "iterations", 0) or 0),
+                        duration_ms=getattr(r, "duration_ms", None),
+                        success=False,
+                        error="Worker collected no extracted evidence (web_extract)",
+                    )
+                )
+                continue
+            if len(getattr(r, "citations", ()) or ()) < 1 and not self.config.enable_deep_read:
+                updated.append(
+                    WorkerResult(
+                        task_id=r.task_id,
+                        output=r.output,
+                        citations=r.citations,
+                        sources=getattr(r, "sources", {}) or {},
+                        web_search_calls=r.web_search_calls,
+                        web_search_trace=getattr(r, "web_search_trace", ()) or (),
+                        web_extract_calls=int(getattr(r, "web_extract_calls", 0) or 0),
+                        web_extract_trace=getattr(r, "web_extract_trace", ()) or (),
+                        evidence=getattr(r, "evidence", ()) or (),
                         iterations=int(getattr(r, "iterations", 0) or 0),
                         duration_ms=getattr(r, "duration_ms", None),
                         success=False,

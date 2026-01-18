@@ -28,6 +28,7 @@ from anvil.subagents.registry import AgentRegistry
 from anvil.subagents.task_tool import SubagentRunner, TaskTool
 from anvil.modes.base import ModeConfig
 from anvil.runtime.hooks import RuntimeHooks
+from anvil.tools.extract import WEB_EXTRACT_TOOL_SCHEMA, web_extract
 from anvil.tools.search import WEB_SEARCH_TOOL_SCHEMA, web_search
 
 
@@ -196,6 +197,13 @@ class AnvilRuntime:
         )
 
         self.tools.register_tool(
+            name="web_extract",
+            description="Extract raw page content (Tavily)",
+            parameters=WEB_EXTRACT_TOOL_SCHEMA,
+            implementation=self._tool_web_extract,
+        )
+
+        self.tools.register_tool(
             name="skill",
             description="Load a skill's instructions into context",
             parameters={
@@ -307,6 +315,9 @@ class AnvilRuntime:
             days=days,
             include_raw_content=include_raw_content,
         )
+
+    def _tool_web_extract(self, url: str, max_chars: int = 20_000) -> dict[str, Any]:
+        return web_extract(url=url, max_chars=max_chars)
 
     def run_turn(self, message: str | None = None) -> None:
         if message:
