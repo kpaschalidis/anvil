@@ -21,11 +21,11 @@
 - [x] Docs sweep: no references to removed `scout` CLI
 - [x] Planning artifacts: include raw output on validation errors too
 - [x] Research profiles: `quick` default, `deep` for 15–20m
-- [ ] Deep profile: worker continuation to spend budget (target calls are guidance; cap is enforced)
+- [x] Deep profile: worker continuation to spend budget (target calls are guidance; cap is enforced)
 - [ ] Research artifacts: persist per-call `web_search` trace + timings
 - [x] Deep profile: round-2 gap-fill (orchestrator→workers→synthesis)
 - [x] Replace per-worker min calls with coverage floors (domains/citations)
-- [ ] Deep profile: optional raw-content reads (deeper grounding)
+- [x] Deep profile: optional raw-content reads (deeper grounding)
 - [x] Research: coverage policy flag (quick warn, deep strict)
 - [x] Research: curated source pack (Top-30) from Tavily score/order + diversity caps
 - [x] Research CLI: timestamped progress logs + total elapsed time
@@ -34,3 +34,5 @@
 - [x] Quick profile: improve synthesis prompt to target 8 citations / 3 domains (warn-only)
 - [x] Quick profile: post-synthesis validation + one repair attempt (hard-fail grounding only)
 - [x] Quick profile: report quality diagnostics line (good/limited)
+- [x] Deep profile: show extracts/evidence in per-worker logs
+- [x] Deep profile: enforce `max_web_extract_calls` across continuations (per-task total)

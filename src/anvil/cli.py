@@ -425,7 +425,10 @@ def _cmd_research(args) -> int:
             if event.duration_ms is not None:
                 dt = f" {event.duration_ms}ms"
             status = "ok" if event.success else "fail"
-            extra = f" searches={event.web_search_calls} citations={event.citations} domains={event.domains}{dt}"
+            extra = (
+                f" searches={event.web_search_calls} extracts={event.web_extract_calls} evidence={event.evidence}"
+                f" citations={event.citations} domains={event.domains}{dt}"
+            )
             if not event.success and event.error:
                 extra += f" error={event.error}"
             _log("worker", f"{event.task_id} {status}{extra}")
@@ -662,7 +665,14 @@ def _cmd_research(args) -> int:
         )
         for r in outcome.results:
             print(
-                f"[diagnostics] {r.task_id}: success={r.success} web_search_calls={r.web_search_calls} citations={len(r.citations)} error={r.error or ''}".rstrip(),
+                (
+                    f"[diagnostics] {r.task_id}: success={r.success}"
+                    f" web_search_calls={r.web_search_calls}"
+                    f" web_extract_calls={getattr(r, 'web_extract_calls', 0) or 0}"
+                    f" evidence={len(getattr(r, 'evidence', ()) or ())}"
+                    f" citations={len(r.citations)}"
+                    f" error={r.error or ''}"
+                ).rstrip(),
                 file=sys.stderr,
             )
 

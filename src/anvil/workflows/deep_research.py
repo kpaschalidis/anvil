@@ -785,10 +785,24 @@ class DeepResearchWorkflow:
         base_prompt: str,
         prior_output: str,
         prior_citations: list[str],
+        prior_evidence_urls: list[str],
         additional_calls: int,
+        remaining_extracts: int,
     ) -> str:
         prior = "\n".join(f"- {u}" for u in prior_citations[:15])
         extra = max(1, int(additional_calls))
+        extract_block = ""
+        if bool(self.config.enable_deep_read) and int(remaining_extracts) > 0:
+            already_read = "\n".join(f"- {u}" for u in prior_evidence_urls[:15])
+            extract_block = (
+                "\n"
+                + f"After searching, call `web_extract` on up to {int(remaining_extracts)} NEW URLs (pages you have not extracted yet).\n"
+                + f"Use `max_chars={max(1, int(self.config.extract_max_chars))}`.\n"
+                + "Prefer diverse, reputable domains and avoid duplicates.\n"
+                + "Already extracted URLs (do not re-extract):\n"
+                + (already_read if already_read else "(none)")
+                + "\n"
+            )
         return (
             base_prompt.strip()
             + "\n\n"
@@ -798,6 +812,7 @@ class DeepResearchWorkflow:
             + "Avoid reusing URLs you already collected.\n\n"
             + "Already collected URLs (do not reuse):\n"
             + (prior if prior else "(none)")
+            + (extract_block if extract_block else "")
             + "\n\n"
             + "Append new bullet points and cite any new URLs you used.\n"
             + (f"\n\nPrevious notes:\n{prior_output.strip()}" if (prior_output or "").strip() else "")
@@ -851,6 +866,7 @@ class DeepResearchWorkflow:
         if target <= 1:
             return results
         max_total = max(1, int(self.config.max_web_search_calls))
+        max_total_extract = max(0, int(self.config.max_web_extract_calls)) if bool(self.config.enable_deep_read) else 0
         max_rounds = max(0, int(self.config.max_worker_continuations))
         if max_rounds <= 0:
             return results
@@ -871,11 +887,19 @@ class DeepResearchWorkflow:
                 t = task_by_id.get(r.task_id)
                 if t is None:
                     continue
+                current_extract = int(getattr(r, "web_extract_calls", 0) or 0)
+                remaining_extract = max(0, max_total_extract - current_extract)
                 prompt = self._continuation_prompt(
                     base_prompt=t.prompt,
                     prior_output=r.output,
                     prior_citations=list(getattr(r, "citations", ()) or ()),
+                    prior_evidence_urls=[
+                        str(ev.get("url"))
+                        for ev in (getattr(r, "evidence", ()) or ())
+                        if isinstance(ev, dict) and isinstance(ev.get("url"), str)
+                    ],
                     additional_calls=min(need, remaining),
+                    remaining_extracts=remaining_extract,
                 )
                 todo.append(
                     WorkerTask(
@@ -884,6 +908,7 @@ class DeepResearchWorkflow:
                         agent_name=t.agent_name,
                         max_iterations=t.max_iterations,
                         max_web_search_calls=remaining,
+                        max_web_extract_calls=remaining_extract,
                     )
                 )
 
@@ -906,6 +931,8 @@ class DeepResearchWorkflow:
                 timeout=self.config.worker_timeout_s,
                 allow_writes=False,
                 max_web_search_calls=None,
+                max_web_extract_calls=max_total_extract,
+                extract_max_chars=int(self.config.extract_max_chars),
                 on_result=(self._emit_worker_completed if self.emitter is not None else None),
             )
             for nr in more:
@@ -927,13 +954,16 @@ class DeepResearchWorkflow:
             return
         urls = set(getattr(result, "citations", ()) or ())
         domains = {urlparse(u).netloc for u in urls if isinstance(u, str) and u.startswith("http")}
+        evidence = getattr(result, "evidence", ()) or ()
         self.emitter.emit(
             WorkerCompletedEvent(
                 task_id=str(getattr(result, "task_id", "") or ""),
                 success=bool(getattr(result, "success", False)),
                 web_search_calls=int(getattr(result, "web_search_calls", 0) or 0),
+                web_extract_calls=int(getattr(result, "web_extract_calls", 0) or 0),
                 citations=len(urls),
                 domains=len(domains),
+                evidence=len(evidence) if isinstance(evidence, (list, tuple)) else 0,
                 duration_ms=getattr(result, "duration_ms", None),
                 error=str(getattr(result, "error", "") or ""),
             )

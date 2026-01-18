@@ -31,6 +31,139 @@ class FakeSubagentRunner:
         return "unused"
 
 
+def test_deep_research_worker_continuation_respects_extract_cap(monkeypatch):
+    from common import llm as common_llm
+
+    def fake_completion(**kwargs):
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        if "research orchestrator" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "task1", "search_query": "q1", "instructions": "i1"},
+                            {"id": "task2", "search_query": "q2", "instructions": "i2"},
+                            {"id": "task3", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+        if "research synthesizer" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "title": "REPORT",
+                        "summary_bullets": ["a"],
+                        "findings": [
+                            {
+                                "claim": "c",
+                                "citations": ["https://example.com/a1"],
+                                "why": "because",
+                            }
+                        ],
+                        "open_questions": [],
+                    }
+                )
+            )
+        return Resp("{}")
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    class CapturingParallelRunner:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def spawn_parallel(self, tasks, **kwargs):
+            self.calls.append({"tasks": tasks, "kwargs": kwargs})
+            # first call: return a deep-read worker with full extract cap already used
+            if len(self.calls) == 1:
+                out = []
+                for t in tasks:
+                    if t.id == "task1":
+                        out.append(
+                            WorkerResult(
+                                task_id=t.id,
+                                output="note",
+                                citations=("https://example.com/a1", "https://example.com/a2"),
+                                web_search_calls=1,
+                                web_extract_calls=3,
+                                evidence=(
+                                    {"url": "https://example.com/a1", "raw_len": 100},
+                                    {"url": "https://example.com/a2", "raw_len": 100},
+                                    {"url": "https://example.com/a3", "raw_len": 100},
+                                ),
+                                success=True,
+                            )
+                        )
+                    else:
+                        out.append(
+                            WorkerResult(
+                                task_id=t.id,
+                                output="note",
+                                citations=(f"https://example.com/{t.id}",),
+                                web_search_calls=4,
+                                web_extract_calls=0,
+                                evidence=(),
+                                success=True,
+                            )
+                        )
+                return out
+
+            # continuation call: ensure no remaining extract budget is passed to task1
+            assert len(tasks) == 1
+            assert tasks[0].id == "task1"
+            assert int(tasks[0].max_web_extract_calls or 0) == 0
+            assert int(kwargs.get("max_web_extract_calls") or 0) == 3
+            return [
+                WorkerResult(
+                    task_id="task1",
+                    output="more",
+                    citations=("https://example.com/a4",),
+                    web_search_calls=3,
+                    web_extract_calls=0,
+                    evidence=(),
+                    success=True,
+                )
+            ]
+
+    runner = CapturingParallelRunner()
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=runner,  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            enable_deep_read=True,
+            max_web_extract_calls=3,
+            enable_worker_continuation=True,
+            max_worker_continuations=1,
+            target_web_search_calls=4,
+            max_web_search_calls=8,
+            require_citations=False,
+            strict_all=False,
+            min_total_domains=0,
+        ),
+        emitter=None,
+    )
+    outcome = wf.run("query")
+    merged = {r.task_id: r for r in outcome.results}
+    assert merged["task1"].web_extract_calls == 3
+
+
 def test_deep_research_workflow_fallback_plan(monkeypatch):
     from common import llm as common_llm
 

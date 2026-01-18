@@ -22,8 +22,10 @@ class WorkerCompletedEvent:
     task_id: str
     success: bool
     web_search_calls: int = 0
+    web_extract_calls: int = 0
     citations: int = 0
     domains: int = 0
+    evidence: int = 0
     duration_ms: int | None = None
     error: str = ""
 

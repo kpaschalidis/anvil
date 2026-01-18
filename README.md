@@ -90,6 +90,8 @@ uv run anvil research "competitive analysis of AI coding agents"
 uv run anvil research --profile quick "competitive analysis of AI coding agents"   # default
 uv run anvil research --profile deep "competitive analysis of AI coding agents"    # ~15–20m, includes round-2 gap fill
 
+Reference: `docs/DEEP_RESEARCH_SYSTEM_REFERENCE.md` explains what “Deep Research” systems do (and what’s still needed to reach Anthropic/ChatGPT-level behavior).
+
     # Saved artifacts (default)
     # - `data/sessions/<session_id>/meta.json`
     # - `data/sessions/<session_id>/research/report.md`
