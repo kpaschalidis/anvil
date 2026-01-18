@@ -413,6 +413,9 @@ def _cmd_research(args) -> int:
             "report_min_domains": 6,
             "report_findings": 8,
             "coverage_mode": "error",
+            "curated_sources_max_total": 0,
+            "curated_sources_max_per_domain": 0,
+            "curated_sources_min_per_task": 0,
             "enable_round2": True,
             "verify_max_tasks": 2,
             "enable_worker_continuation": True,
@@ -440,6 +443,9 @@ def _cmd_research(args) -> int:
             "report_min_domains": 3,
             "report_findings": 5,
             "coverage_mode": "warn",
+            "curated_sources_max_total": 30,
+            "curated_sources_max_per_domain": 2,
+            "curated_sources_min_per_task": 3,
             "enable_round2": False,
             "verify_max_tasks": 0,
             "enable_worker_continuation": False,
@@ -469,6 +475,9 @@ def _cmd_research(args) -> int:
     report_min_domains = int(defaults["report_min_domains"])
     report_findings = int(defaults["report_findings"])
     coverage_mode = str(defaults["coverage_mode"])
+    curated_sources_max_total = int(defaults["curated_sources_max_total"])
+    curated_sources_max_per_domain = int(defaults["curated_sources_max_per_domain"])
+    curated_sources_min_per_task = int(defaults["curated_sources_min_per_task"])
     if bool(args.coverage_warn) and bool(args.coverage_strict):
         print("Error: choose only one of --coverage-warn or --coverage-strict", file=sys.stderr)
         return 2
@@ -514,6 +523,9 @@ def _cmd_research(args) -> int:
             report_min_unique_domains_target=max(0, report_min_domains),
             report_findings_target=max(1, report_findings),
             coverage_mode=coverage_mode,
+            curated_sources_max_total=max(0, curated_sources_max_total),
+            curated_sources_max_per_domain=max(0, curated_sources_max_per_domain),
+            curated_sources_min_per_task=max(0, curated_sources_min_per_task),
         ),
         emitter=EventEmitter(on_event),
     )
@@ -571,6 +583,9 @@ def _cmd_research(args) -> int:
                 "report_min_domains": int(report_min_domains),
                 "report_findings": int(report_findings),
                 "coverage_mode": str(coverage_mode),
+                "curated_sources_max_total": int(curated_sources_max_total),
+                "curated_sources_max_per_domain": int(curated_sources_max_per_domain),
+                "curated_sources_min_per_task": int(curated_sources_min_per_task),
             },
         }
     )

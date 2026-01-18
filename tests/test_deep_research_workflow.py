@@ -383,6 +383,114 @@ def test_quick_synthesis_hard_fails_on_unrepairable_grounding(monkeypatch):
         wf.run("query")
 
 
+def test_quick_curated_source_pack_respects_max_total(monkeypatch):
+    from common import llm as common_llm
+
+    def fake_completion(**kwargs):
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        if "research orchestrator" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "a", "search_query": "q1", "instructions": "i1"},
+                            {"id": "b", "search_query": "q2", "instructions": "i2"},
+                            {"id": "c", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+        # Synthesis: cite the top result for each task (unique domains).
+        return Resp(
+            json.dumps(
+                {
+                    "title": "REPORT",
+                    "summary_bullets": ["a"],
+                    "findings": [
+                        {
+                            "claim": "c1",
+                            "citations": ["https://a.example.com/1", "https://b.example.com/1"],
+                        },
+                        {
+                            "claim": "c2",
+                            "citations": ["https://c.example.com/1", "https://a.example.com/1"],
+                        },
+                    ],
+                    "open_questions": [],
+                }
+            )
+        )
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    class RankedRunner:
+        def spawn_parallel(self, tasks, **kwargs):
+            results = []
+            for t in tasks:
+                url1 = f"https://{t.id}.example.com/1"
+                url2 = f"https://{t.id}.example.com/2"
+                results.append(
+                    WorkerResult(
+                        task_id=t.id,
+                        output="x",
+                        citations=(url1, url2),
+                        sources={
+                            url1: {"title": f"{t.id}1", "snippet": "s1"},
+                            url2: {"title": f"{t.id}2", "snippet": "s2"},
+                        },
+                        web_search_calls=1,
+                        web_search_trace=(
+                            {
+                                "success": True,
+                                "results": [
+                                    {"url": url1, "title": f"{t.id}1", "score": 0.9, "snippet": "s1"},
+                                    {"url": url2, "title": f"{t.id}2", "score": 0.8, "snippet": "s2"},
+                                ],
+                            },
+                        ),
+                        success=True,
+                    )
+                )
+            return results
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=RankedRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            min_total_domains=0,
+            min_total_citations=1,
+            curated_sources_max_total=3,
+            curated_sources_max_per_domain=1,
+            curated_sources_min_per_task=1,
+            report_min_unique_citations_target=1,
+            report_min_unique_domains_target=1,
+            report_findings_target=2,
+        ),
+        emitter=None,
+    )
+    outcome = wf.run("query")
+    assert isinstance(outcome.synthesis_input, dict)
+    curated = outcome.synthesis_input.get("curated_sources")
+    assert isinstance(curated, list)
+    assert len(curated) <= 3
+
+
 def test_deep_research_workflow_planning_invalid_json_is_error(monkeypatch):
     from common import llm as common_llm
 

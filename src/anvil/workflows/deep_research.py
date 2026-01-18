@@ -89,6 +89,9 @@ class DeepResearchConfig:
     report_min_unique_domains_target: int = 0
     report_findings_target: int = 5
     coverage_mode: str = "warn"  # "warn" or "error"
+    curated_sources_max_total: int = 0
+    curated_sources_max_per_domain: int = 0
+    curated_sources_min_per_task: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +115,7 @@ class DeepResearchOutcome:
     synthesis_raw: str = ""
     synthesis_error: str | None = None
     synthesis_input: dict[str, Any] | None = None
+    curated_sources: list[dict[str, Any]] | None = None
 
 
 def _planning_prompt(query: str, *, max_tasks: int) -> str:
@@ -573,10 +577,41 @@ class DeepResearchWorkflow:
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message="Synthesizing report"))
 
-        synthesis_input = self._build_synthesis_input(query=query, findings=findings, allowed_urls=citations)
+        curated_sources: list[dict[str, Any]] | None = None
+        synthesis_findings = findings
+        synthesis_allowed_urls = list(citations)
+        if not self.config.require_quote_per_claim and int(self.config.curated_sources_max_total) > 0:
+            curated_sources = self._build_curated_sources(
+                results=results,
+                max_total=int(self.config.curated_sources_max_total),
+                max_per_domain=int(self.config.curated_sources_max_per_domain),
+                min_per_task=int(self.config.curated_sources_min_per_task),
+            )
+            curated_urls = {
+                str(s.get("url"))
+                for s in curated_sources
+                if isinstance(s, dict) and isinstance(s.get("url"), str) and str(s.get("url")) in set(citations)
+            }
+            synthesis_allowed_urls = sorted(curated_urls)
+            if not synthesis_allowed_urls:
+                curated_sources = None
+                synthesis_allowed_urls = list(citations)
+                synthesis_findings = findings
+            else:
+                synthesis_findings = self._build_synthesis_findings(
+                    results=results,
+                    allowed_urls=set(synthesis_allowed_urls),
+                )
+
+        synthesis_input = self._build_synthesis_input(
+            query=query,
+            findings=synthesis_findings,
+            allowed_urls=sorted(set(citations)),
+            curated_sources=curated_sources,
+        )
 
         try:
-            report, report_json = self._synthesize_and_render(query, findings, citations)
+            report, report_json = self._synthesize_and_render(query, synthesis_findings, synthesis_allowed_urls)
         except SynthesisError as e:
             combined_plan = plan
             if round2_tasks:
@@ -609,6 +644,7 @@ class DeepResearchWorkflow:
                     synthesis_raw=e.raw,
                     synthesis_error=str(e),
                     synthesis_input=synthesis_input,
+                    curated_sources=curated_sources,
                 ),
             ) from e
 
@@ -640,6 +676,7 @@ class DeepResearchWorkflow:
             verify_planner_raw=verify_planner_raw,
             verify_planner_error=verify_planner_error,
             synthesis_input=synthesis_input,
+            curated_sources=curated_sources,
         )
 
     def _plan(self, query: str, *, max_tasks: int, min_tasks: int) -> tuple[dict[str, Any], str, str | None]:
@@ -1630,6 +1667,7 @@ class DeepResearchWorkflow:
         query: str,
         findings: list[dict[str, Any]],
         allowed_urls: list[str],
+        curated_sources: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         allowed = set(allowed_urls)
         sources: dict[str, dict[str, Any]] = {}
@@ -1677,7 +1715,158 @@ class DeepResearchWorkflow:
 
         allowed_sources = list(sources.values())
         allowed_sources.sort(key=lambda x: (x.get("domain") or "", x.get("url") or ""))
-        return {"query": query, "allowed_sources": allowed_sources, "tasks": by_task}
+        out: dict[str, Any] = {"query": query, "allowed_sources": allowed_sources, "tasks": by_task}
+        if curated_sources is not None:
+            out["curated_sources"] = curated_sources
+        return out
+
+    def _build_synthesis_findings(
+        self,
+        *,
+        results: list[WorkerResult],
+        allowed_urls: set[str],
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for r in results:
+            sources = getattr(r, "sources", {}) or {}
+            filtered_sources: dict[str, dict[str, str]] = {}
+            if isinstance(sources, dict):
+                for url, meta in sources.items():
+                    if isinstance(url, str) and url in allowed_urls and isinstance(meta, dict):
+                        filtered_sources[url] = {
+                            "title": str(meta.get("title") or "").strip(),
+                            "snippet": sanitize_snippet(str(meta.get("snippet") or "")),
+                        }
+            out.append(
+                {
+                    "task_id": r.task_id,
+                    "success": r.success,
+                    "output": r.output,
+                    "error": r.error,
+                    "citations": [u for u in (list(r.citations) if r.citations else []) if isinstance(u, str) and u in allowed_urls],
+                    "sources": filtered_sources,
+                    "web_search_calls": int(r.web_search_calls or 0),
+                }
+            )
+        return out
+
+    def _build_curated_sources(
+        self,
+        *,
+        results: list[WorkerResult],
+        max_total: int,
+        max_per_domain: int,
+        min_per_task: int,
+    ) -> list[dict[str, Any]]:
+        max_total = max(0, int(max_total))
+        if max_total <= 0:
+            return []
+        max_per_domain = max(0, int(max_per_domain))
+        min_per_task = max(0, int(min_per_task))
+
+        per_task: dict[str, list[dict[str, Any]]] = {}
+        for r in results:
+            task_id = str(getattr(r, "task_id", "") or "").strip()
+            if not task_id:
+                continue
+            sources = getattr(r, "sources", {}) or {}
+            best_by_url: dict[str, dict[str, Any]] = {}
+            rank = 0
+            for call in getattr(r, "web_search_trace", ()) or ():
+                if not isinstance(call, dict):
+                    continue
+                items = call.get("results")
+                if not isinstance(items, list):
+                    continue
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    url = it.get("url")
+                    if not (isinstance(url, str) and url.startswith("http")):
+                        continue
+                    rank += 1
+                    score = it.get("score")
+                    score_f = float(score) if isinstance(score, (int, float)) else 0.0
+                    title = it.get("title")
+                    snippet = it.get("snippet")
+                    meta = sources.get(url) if isinstance(sources, dict) else None
+                    if isinstance(meta, dict):
+                        title = meta.get("title") if isinstance(meta.get("title"), str) else title
+                        snippet = meta.get("snippet") if isinstance(meta.get("snippet"), str) else snippet
+                    entry = best_by_url.get(url)
+                    if entry is None or score_f > float(entry.get("score") or 0.0):
+                        best_by_url[url] = {
+                            "url": url,
+                            "domain": urlparse(url).netloc,
+                            "title": (str(title or "")).strip(),
+                            "snippet": sanitize_snippet(str(snippet or "")),
+                            "score": score_f,
+                            "task_id": task_id,
+                            "rank_within_task": rank,
+                        }
+            candidates = list(best_by_url.values())
+            candidates.sort(key=lambda x: (-float(x.get("score") or 0.0), int(x.get("rank_within_task") or 0)))
+            per_task[task_id] = candidates
+
+        # Selection with per-task minimum and per-domain caps, preserving task diversity.
+        selected: list[dict[str, Any]] = []
+        selected_urls: set[str] = set()
+        domain_counts: dict[str, int] = {}
+
+        def can_add(item: dict[str, Any]) -> bool:
+            url = item.get("url")
+            if not isinstance(url, str) or url in selected_urls:
+                return False
+            domain = str(item.get("domain") or "")
+            if max_per_domain and domain_counts.get(domain, 0) >= max_per_domain:
+                return False
+            return True
+
+        task_ids = list(per_task.keys())
+        per_task_counts: dict[str, int] = {tid: 0 for tid in task_ids}
+
+        # Pass 1: satisfy min_per_task where possible.
+        made_progress = True
+        while made_progress and len(selected) < max_total and min_per_task:
+            made_progress = False
+            for tid in task_ids:
+                if len(selected) >= max_total:
+                    break
+                if per_task_counts.get(tid, 0) >= min_per_task:
+                    continue
+                items = per_task.get(tid) or []
+                while items and not can_add(items[0]):
+                    items.pop(0)
+                if not items:
+                    continue
+                item = items.pop(0)
+                if can_add(item):
+                    selected.append(item)
+                    selected_urls.add(item["url"])
+                    domain_counts[item["domain"]] = domain_counts.get(item["domain"], 0) + 1
+                    per_task_counts[tid] = per_task_counts.get(tid, 0) + 1
+                    made_progress = True
+
+        # Pass 2: fill remaining slots round-robin.
+        made_progress = True
+        while made_progress and len(selected) < max_total:
+            made_progress = False
+            for tid in task_ids:
+                if len(selected) >= max_total:
+                    break
+                items = per_task.get(tid) or []
+                while items and not can_add(items[0]):
+                    items.pop(0)
+                if not items:
+                    continue
+                item = items.pop(0)
+                if can_add(item):
+                    selected.append(item)
+                    selected_urls.add(item["url"])
+                    domain_counts[item["domain"]] = domain_counts.get(item["domain"], 0) + 1
+                    made_progress = True
+
+        return selected
 
     def _collect_citations_from_traces(self, results) -> list[str]:
         urls: set[str] = set()
