@@ -99,6 +99,24 @@ def _build_parser() -> argparse.ArgumentParser:
     research.add_argument("--round2-max-tasks", type=int, default=None, help="Max follow-up tasks in deep profile")
     research.add_argument("--verify-max-tasks", type=int, default=None, help="Max verification tasks (deep profile)")
     research.add_argument("--min-citations", type=int, default=None)
+    research.add_argument(
+        "--curated-max-total",
+        type=int,
+        default=None,
+        help="Curated source pack max size for synthesis (quick defaults to 30; 0 disables)",
+    )
+    research.add_argument(
+        "--curated-max-per-domain",
+        type=int,
+        default=None,
+        help="Curated source pack max URLs per domain (quick defaults to 2; 0 disables)",
+    )
+    research.add_argument(
+        "--curated-min-per-task",
+        type=int,
+        default=None,
+        help="Curated source pack minimum URLs per task when possible (quick defaults to 3)",
+    )
     research.add_argument("--data-dir", default="data/sessions")
     research.add_argument("--session-id", default=None)
     research.add_argument("--resume", default=None, help="Resume an existing research session id")
@@ -478,6 +496,15 @@ def _cmd_research(args) -> int:
     curated_sources_max_total = int(defaults["curated_sources_max_total"])
     curated_sources_max_per_domain = int(defaults["curated_sources_max_per_domain"])
     curated_sources_min_per_task = int(defaults["curated_sources_min_per_task"])
+    if args.curated_max_total is not None:
+        curated_sources_max_total = int(args.curated_max_total)
+    if args.curated_max_per_domain is not None:
+        curated_sources_max_per_domain = int(args.curated_max_per_domain)
+    if args.curated_min_per_task is not None:
+        curated_sources_min_per_task = int(args.curated_min_per_task)
+    if curated_sources_max_total < 0 or curated_sources_max_per_domain < 0 or curated_sources_min_per_task < 0:
+        print("Error: curated pack arguments must be >= 0", file=sys.stderr)
+        return 2
     if bool(args.coverage_warn) and bool(args.coverage_strict):
         print("Error: choose only one of --coverage-warn or --coverage-strict", file=sys.stderr)
         return 2
