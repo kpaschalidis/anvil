@@ -230,6 +230,18 @@ def test_sanitize_snippet_removes_relative_links_and_markdown_nav():
     assert "MCP (Model Context Protocol) is an open-source standard" in out
 
 
+def test_sanitize_snippet_removes_inline_headings_and_bullets():
+    raw = (
+        "What is MCP?. ##### About MCP. ##### Develop with MCP. * Connect to local MCP servers. "
+        "* Connect to remote MCP Servers. MCP is an open-source standard."
+    )
+    out = sanitize_snippet(raw)
+    assert "#####" not in out
+    assert " * " not in out
+    assert "Connect to local MCP servers" in out
+    assert "MCP is an open-source standard" in out
+
+
 def test_quick_synthesis_repairs_for_coverage(monkeypatch):
     from common import llm as common_llm
 

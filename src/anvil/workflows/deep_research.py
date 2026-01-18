@@ -42,6 +42,15 @@ def sanitize_snippet(text: str) -> str:
     # Drop standalone relative URLs in parentheses.
     s = re.sub(r"\((/[^)]+)\)", "", s)
 
+    # Remove common inline markdown/nav tokens that Tavily snippets can include.
+    s = s.replace("#####", " ")
+    s = s.replace("####", " ")
+    s = s.replace("###", " ")
+    s = s.replace("##", " ")
+    s = s.replace("#", " ")
+    # Treat " * " as a bullet separator, not emphasis.
+    s = re.sub(r"\s\*\s", " ", s)
+
     cleaned_lines: list[str] = []
     for line in s.splitlines():
         line = line.strip()
@@ -56,6 +65,8 @@ def sanitize_snippet(text: str) -> str:
 
     s = " ".join(cleaned_lines) if cleaned_lines else s
     s = " ".join(s.split())
+    if len(s) > 360:
+        s = s[:360].rstrip() + "…"
     return s
 
 
