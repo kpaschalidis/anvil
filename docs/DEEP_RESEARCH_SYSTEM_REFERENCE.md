@@ -186,3 +186,79 @@ If the goal is Anthropic/ChatGPT-level deep research, the next “big swing” i
 ## Notes on budgets (Anvil-specific)
 
 - In Anvil, the deep profile can optionally **continue** some tasks to spend remaining budget and improve coverage. When enabled, budgets like `max_web_search_calls` and `max_web_extract_calls` should be interpreted as **per-task totals across continuation attempts**, not “per attempt”, so time/cost stay predictable.
+
+## GPT-Researcher (open-source reference model)
+
+GPT-Researcher is a useful open-source point of comparison because it implements “research as a pipeline” with explicit knobs for **breadth/depth**, source curation, and multi-agent writing flows.
+
+### Deep Research workflow (breadth × depth recursion)
+
+In GPT-Researcher’s “Deep Research” mode:
+
+- It uses a **tree-like exploration pattern** with configurable breadth/depth and concurrency (their README describes it as “~5 minutes per deep research”).
+- Implementation uses a recursive function roughly like:
+  - generate `breadth` search queries (each with a “research goal”),
+  - run those queries concurrently (limited by a concurrency semaphore),
+  - for each result, if `depth > 1`, recurse with `depth-1` and a reduced breadth (they halve breadth, with a minimum of 2), using follow-up questions + the research goal as the next query.
+
+See `gpt_researcher/skills/deep_research.py` in the GPT-Researcher repo for the concrete implementation details (query generation, recursion, concurrency, and context trimming).
+
+### “Workers” as nested researchers (not just tool calls)
+
+Instead of a single LLM loop calling search tools directly, GPT-Researcher’s deep research spawns nested `GPTResearcher(...)` instances per generated search query:
+
+- Each nested researcher runs `conduct_research()` (which uses the configured retriever(s) + scraper pipeline),
+- Returns “context” plus visited URLs and source metadata,
+- The deep research skill merges learnings/citations/visited URLs across branches.
+
+This is one reason GPT-Researcher tends to “feel” deeper even when using similar search providers: it treats each branch as a self-contained research run.
+
+See `gpt_researcher/skills/deep_research.py` and `gpt_researcher/agent.py`.
+
+### Context budgeting (word-based)
+
+GPT-Researcher explicitly trims context to a word-budget:
+
+- `MAX_CONTEXT_WORDS = 25000` (hard cap for safety margin),
+- it keeps the most recent items first (“reverse then insert”) to preserve recency.
+
+See `gpt_researcher/skills/deep_research.py`.
+
+### Source curation (LLM-based)
+
+GPT-Researcher has an optional curation step:
+
+- `CURATE_SOURCES` config flag (default false in their default config),
+- `SourceCurator.curate_sources(...)` calls an LLM to rank sources by “relevance/credibility” and returns curated JSON.
+- If it fails, it falls back to the original sources.
+
+See `gpt_researcher/skills/curator.py` and `gpt_researcher/skills/researcher.py`.
+
+### Output length controls (minimum word targets + subtopic limits)
+
+GPT-Researcher controls report length primarily through **prompt constraints** and config:
+
+- `TOTAL_WORDS` (default 1200) used in report generation prompts as a minimum word count,
+- `MAX_SUBTOPICS` / `max_subtopics` limits how many subtopics/sections are generated for multi-part reports,
+- different `ReportType` values (e.g., `DetailedReport`, `DeepResearch`) route through different behaviors.
+
+See `gpt_researcher/config/variables/default.py`, `gpt_researcher/utils/enum.py`, and report prompt construction in `gpt_researcher/prompts.py` / `gpt_researcher/actions/report_generation.py`.
+
+### Multi-agent “publication pipeline” (LangGraph)
+
+GPT-Researcher also ships a separate, heavier multi-agent workflow (LangGraph-based) that models a publication pipeline:
+
+- Chief Editor orchestrates,
+- Editor plans outline,
+- For each outline section: Researcher → Reviewer → Revisor loop,
+- Writer compiles final report,
+- Publisher exports to multiple formats.
+
+See `multi_agents/README.md` in the GPT-Researcher repo.
+
+### How this informs Anvil
+
+If we want Anthropic/ChatGPT-level “Deep Research” behavior in Anvil, GPT-Researcher suggests two concrete levers that map cleanly to our approach:
+
+- **breadth/depth as first-class knobs** (not just “max tasks”): breadth = parallel branches, depth = recursive refinement,
+- **a writer pipeline** (outline → section drafts → editor pass) for longer, more structured reports, with explicit length targets.
