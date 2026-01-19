@@ -410,6 +410,130 @@ def test_select_diverse_findings_prefers_new_urls_and_domains():
     assert len(domains) >= 2
 
 
+def test_deep_multi_pass_section_writer_retries_on_truncated_json(monkeypatch):
+    from common import llm as common_llm
+
+    calls = {"n": 0}
+
+    def fake_completion(**kwargs):
+        calls["n"] += 1
+
+        class Msg:
+            def __init__(self, content):
+                self.content = content
+
+        class Choice:
+            def __init__(self, content):
+                self.message = Msg(content)
+
+        class Resp:
+            def __init__(self, content):
+                self.choices = [Choice(content)]
+
+        prompt = kwargs["messages"][0]["content"]
+        # planning
+        if "research orchestrator" in prompt and '"tasks"' in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "tasks": [
+                            {"id": "task1", "search_query": "q1", "instructions": "i1"},
+                            {"id": "task2", "search_query": "q2", "instructions": "i2"},
+                            {"id": "task3", "search_query": "q3", "instructions": "i3"},
+                        ]
+                    }
+                )
+            )
+        # outline
+        if "research outline planner" in prompt:
+            return Resp(
+                json.dumps(
+                    {"sections": [{"id": "s1", "title": "Section", "task_ids": ["task1", "task2"]}]}
+                )
+            )
+        # section writer: first call returns truncated fenced json; second call returns valid raw json
+        if "research writer for one section" in prompt:
+            # retry call includes assistant message; detect by messages length
+            if len(kwargs.get("messages") or []) >= 3:
+                return Resp(
+                    json.dumps(
+                        {
+                            "findings": [
+                                {
+                                    "claim": "c",
+                                    "evidence": [
+                                        {"url": "https://example.com/a", "quote": "QUOTE"},
+                                    ],
+                                }
+                            ]
+                        }
+                    )
+                )
+            return Resp("```json\n{\"findings\": [{\"claim\": \"c\"")  # intentionally cut off
+        # summary
+        if "research summarizer" in prompt:
+            return Resp(
+                json.dumps(
+                    {
+                        "title": "REPORT",
+                        "summary_bullets": ["a"],
+                        "open_questions": [],
+                    }
+                )
+            )
+        return Resp("{}")
+
+    monkeypatch.setattr(common_llm, "completion", fake_completion)
+
+    class EvidenceRunner:
+        def spawn_parallel(self, tasks, **kwargs):
+            # Provide evidence excerpts that contain the quote substring.
+            return [
+                WorkerResult(
+                    task_id=t.id,
+                    output="x",
+                    citations=("https://example.com/a",),
+                    sources={"https://example.com/a": {"title": "t", "snippet": "s"}},
+                    web_search_calls=2,
+                    web_search_trace=(
+                        {"success": True, "results": [{"url": "https://example.com/a", "title": "t", "score": 0.9, "snippet": "s"}]},
+                    ),
+                    web_extract_calls=1,
+                    evidence=(
+                        {"url": "https://example.com/a", "title": "t", "excerpt": "xx QUOTE yy"},
+                    ),
+                    success=True,
+                )
+                for t in tasks
+            ]
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=EvidenceRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=1,
+            worker_max_iterations=1,
+            worker_timeout_s=10.0,
+            enable_deep_read=True,
+            max_web_extract_calls=1,
+            require_quote_per_claim=True,
+            multi_pass_synthesis=True,
+            enable_round2=False,
+            verify_max_tasks=0,
+            min_total_domains=0,
+            min_total_citations=1,
+            report_min_unique_citations_target=1,
+            report_min_unique_domains_target=1,
+            report_findings_target=1,
+        ),
+        emitter=None,
+    )
+    outcome = wf.run("query")
+    assert outcome.report_markdown.startswith("# REPORT")
+    assert calls["n"] >= 4  # plan + outline + section (+retry) + summary
+
+
 def test_quick_synthesis_repairs_for_coverage(monkeypatch):
     from common import llm as common_llm
 

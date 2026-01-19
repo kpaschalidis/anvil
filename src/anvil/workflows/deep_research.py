@@ -337,10 +337,12 @@ Return ONLY valid JSON:
 }}
 
 Rules:
-- Provide 3 to 8 findings for this section.
-- Every finding must include 2-3 evidence items (prefer 3 when possible).
+- Provide 3 to 5 findings for this section (keep output compact).
+- Every finding must include 1-2 evidence items (prefer 2 when possible).
 - Every evidence.url must appear in the provided Evidence list.
 - Every evidence.quote must be a substring copied from that URL's excerpt.
+- Keep each `claim` short (<= 200 chars) and each `quote` short (<= 240 chars). If the excerpt is long, select a shorter substring.
+- Return ONLY raw JSON (no markdown, no code fences).
 """
 
 
@@ -1619,17 +1621,53 @@ class DeepResearchWorkflow:
                 model=self.config.model,
                 messages=[{"role": "user", "content": _section_findings_prompt(query, section_title=sec_title, evidence=evidence)}],
                 temperature=0.2,
-                max_tokens=900,
+                max_tokens=1100,
             )
             sec_raw = (sec_resp.choices[0].message.content or "").strip()
+            sec_payload: dict[str, Any] | None = None
             try:
-                sec_payload = self._parse_planner_json(sec_raw)
-            except Exception as e:
-                raise SynthesisError(
-                    f"Section writer returned invalid JSON for '{sec_title}': {e}",
-                    raw=sec_raw,
-                    stage="section",
-                ) from e
+                parsed = self._parse_planner_json(sec_raw)
+                if isinstance(parsed, dict):
+                    sec_payload = parsed
+            except Exception:
+                sec_payload = None
+
+            if sec_payload is None:
+                # Retry once with stricter instruction. Some models occasionally emit
+                # non-JSON or get cut off; we prefer a single deterministic retry.
+                repair_msg = (
+                    "Your previous response was invalid JSON (or was cut off). "
+                    "Return ONLY valid raw JSON matching the schema. "
+                    "Provide exactly 3 findings. Each finding must include 1-2 evidence items. "
+                    "Keep claims and quotes short. No markdown."
+                )
+                sec_resp2 = llm.completion(
+                    model=self.config.model,
+                    messages=[
+                        {"role": "user", "content": _section_findings_prompt(query, section_title=sec_title, evidence=evidence)},
+                        {"role": "assistant", "content": sec_raw},
+                        {"role": "user", "content": repair_msg},
+                    ],
+                    temperature=0.0,
+                    max_tokens=900,
+                )
+                sec_raw2 = (sec_resp2.choices[0].message.content or "").strip()
+                try:
+                    parsed2 = self._parse_planner_json(sec_raw2)
+                except Exception as e:
+                    raise SynthesisError(
+                        f"Section writer returned invalid JSON for '{sec_title}': {e}",
+                        raw=sec_raw2 or sec_raw,
+                        stage="section",
+                    ) from e
+                if not isinstance(parsed2, dict):
+                    raise SynthesisError(
+                        f"Section writer returned invalid JSON for '{sec_title}': content is not a JSON object",
+                        raw=sec_raw2 or sec_raw,
+                        stage="section",
+                    )
+                sec_payload = parsed2
+                sec_raw = sec_raw2
 
             sec_findings = sec_payload.get("findings") if isinstance(sec_payload, dict) else None
             if not isinstance(sec_findings, list) or not sec_findings:
