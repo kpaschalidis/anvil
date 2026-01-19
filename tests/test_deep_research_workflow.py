@@ -1411,3 +1411,77 @@ def test_catalog_synthesis_payload_validation_rejects_unsupported_urls():
             evidence=evidence,
             target_items=1,
         )
+
+
+def test_narrative_memo_includes_coverage_gaps():
+    from anvil.workflows.iterative_loop import ReportType
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            min_total_domains=5,
+            min_total_citations=10,
+        ),
+        emitter=None,
+    )
+
+    memo = wf._build_round_memo(  # noqa: SLF001
+        query="what is mcp",
+        report_type=ReportType.NARRATIVE,
+        round_index=1,
+        tasks_completed=1,
+        tasks_remaining=5,
+        findings=[
+            {
+                "task_id": "task1",
+                "success": True,
+                "output": "x",
+                "citations": ["https://example.com/a"],
+                "sources": {},
+                "evidence": [],
+            }
+        ],
+    )
+
+    gap_types = {g.gap_type for g in memo.gaps}
+    assert "coverage_domains" in gap_types
+    assert "coverage_citations" in gap_types
+
+
+def test_narrative_memo_includes_missing_evidence_gap_when_required():
+    from anvil.workflows.iterative_loop import ReportType
+
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            enable_deep_read=True,
+            require_quote_per_claim=True,
+            min_total_domains=0,
+            min_total_citations=0,
+        ),
+        emitter=None,
+    )
+
+    memo = wf._build_round_memo(  # noqa: SLF001
+        query="what is mcp",
+        report_type=ReportType.NARRATIVE,
+        round_index=1,
+        tasks_completed=1,
+        tasks_remaining=5,
+        findings=[
+            {
+                "task_id": "task1",
+                "success": True,
+                "output": "x",
+                "citations": ["https://example.com/a"],
+                "sources": {},
+                "evidence": [],
+            }
+        ],
+    )
+
+    assert any(g.gap_type == "missing_evidence" for g in memo.gaps)

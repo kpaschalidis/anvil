@@ -41,7 +41,7 @@
 - [x] Detect `report_type` (`narrative` vs `catalog`) before planning
 - [x] Implement round memo schema + bounded serialization (<=~2k tokens)
 - [ ] Implement structured gap detection:
-  - [ ] Narrative gaps (coverage/diversity/topic)
+  - [x] Narrative gaps (coverage/evidence)
   - [x] Catalog gaps (missing fields per candidate)
 - [x] Replace fixed phases with 3-round loop:
   - [x] Round 1 discovery
