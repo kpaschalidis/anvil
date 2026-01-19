@@ -129,6 +129,7 @@ class DeepResearchOutcome:
     citations: list[str]
     report_markdown: str
     report_json: dict[str, Any] | None = None
+    rounds: list[dict[str, Any]] | None = None
     planner_raw: str = ""
     planner_error: str | None = None
     gap_plan: dict[str, Any] | None = None
@@ -685,6 +686,7 @@ class DeepResearchWorkflow:
             raise ValueError("query is required")
 
         report_type = detect_report_type(query)
+        rounds: list[dict[str, Any]] = []
 
         max_rounds = max(1, int(self.config.max_rounds))
         max_tasks_total = max(1, int(self.config.max_tasks_total))
@@ -757,6 +759,17 @@ class DeepResearchWorkflow:
             tasks_remaining=max(0, max_tasks_total - tasks_completed),
             findings=findings,
         )
+        rounds.append(
+            {
+                "round_index": 1,
+                "stage": "discovery",
+                "plan": plan,
+                "planner_raw": planner_raw,
+                "planner_error": planner_error,
+                "task_ids": [t.id for t in round1_tasks],
+                "memo": memo_to_planner_context(memo_round1),
+            }
+        )
 
         gap_plan: dict[str, Any] | None = None
         round2_tasks: list[WorkerTask] = []
@@ -789,6 +802,18 @@ class DeepResearchWorkflow:
             tasks_remaining=max(0, max_tasks_total - tasks_completed),
             findings=findings,
         )
+        if round2_tasks:
+            rounds.append(
+                {
+                    "round_index": 2,
+                    "stage": "gap_fill",
+                    "plan": gap_plan,
+                    "planner_raw": gap_planner_raw,
+                    "planner_error": gap_planner_error,
+                    "task_ids": [t.id for t in round2_tasks],
+                    "memo": memo_to_planner_context(memo_after_round2),
+                }
+            )
 
         verify_plan: dict[str, Any] | None = None
         verify_tasks: list[WorkerTask] = []
@@ -819,6 +844,25 @@ class DeepResearchWorkflow:
                     tasks_completed += len(verify_tasks)
                 else:
                     raise PlanningError("Verification round produced no tasks", raw=verify_planner_raw)
+                memo_after_round3 = self._build_round_memo(
+                    query=query,
+                    report_type=report_type,
+                    round_index=3,
+                    tasks_completed=len(findings),
+                    tasks_remaining=max(0, max_tasks_total - tasks_completed),
+                    findings=findings,
+                )
+                rounds.append(
+                    {
+                        "round_index": 3,
+                        "stage": "verification",
+                        "plan": verify_plan,
+                        "planner_raw": verify_planner_raw,
+                        "planner_error": verify_planner_error,
+                        "task_ids": [t.id for t in verify_tasks],
+                        "memo": memo_to_planner_context(memo_after_round3),
+                    }
+                )
 
         citations = (
             self._collect_evidence_urls(results)
@@ -913,6 +957,7 @@ class DeepResearchWorkflow:
                     citations=citations,
                     report_markdown="",
                     report_json=None,
+                    rounds=rounds,
                     gap_plan=gap_plan,
                     gap_planner_raw=gap_planner_raw,
                     gap_planner_error=gap_planner_error,
@@ -951,6 +996,7 @@ class DeepResearchWorkflow:
                     citations=citations,
                     report_markdown="",
                     report_json=None,
+                    rounds=rounds,
                     gap_plan=gap_plan,
                     gap_planner_raw=gap_planner_raw,
                     gap_planner_error=gap_planner_error,
@@ -986,6 +1032,7 @@ class DeepResearchWorkflow:
             citations=citations,
             report_markdown=report,
             report_json=report_json,
+            rounds=rounds,
             gap_plan=gap_plan,
             gap_planner_raw=gap_planner_raw,
             gap_planner_error=gap_planner_error,

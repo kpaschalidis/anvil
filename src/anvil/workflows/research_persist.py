@@ -6,6 +6,24 @@ from typing import Any
 from anvil.workflows.research_artifacts import make_research_session_dir, write_json, write_text
 
 
+def _worker_payload(r) -> dict[str, Any]:
+    return {
+        "task_id": r.task_id,
+        "success": r.success,
+        "error": r.error,
+        "web_search_calls": r.web_search_calls,
+        "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
+        "iterations": getattr(r, "iterations", 0),
+        "duration_ms": getattr(r, "duration_ms", None),
+        "citations": list(r.citations),
+        "sources": getattr(r, "sources", {}) or {},
+        "web_search_trace": list(getattr(r, "web_search_trace", ()) or ()),
+        "web_extract_trace": list(getattr(r, "web_extract_trace", ()) or ()),
+        "evidence": list(getattr(r, "evidence", ()) or ()),
+        "output": r.output,
+    }
+
+
 def persist_research_outcome(
     *,
     data_dir: str,
@@ -30,6 +48,7 @@ def persist_research_outcome(
     synthesizer_error_path = session_dir / "research" / "synthesizer_error.json"
     synthesis_input_path = session_dir / "research" / "synthesis_input.json"
     workers_dir = session_dir / "research" / "workers"
+    rounds_dir = session_dir / "research" / "rounds"
     report_path = Path(output_path) if output_path else (session_dir / "research" / "report.md")
     report_json_path = session_dir / "research" / "report.json"
 
@@ -83,25 +102,54 @@ def persist_research_outcome(
         synthesis_input = getattr(outcome, "synthesis_input", None)
         if isinstance(synthesis_input, dict):
             write_json(synthesis_input_path, synthesis_input)
+        results_by_id = {r.task_id: r for r in outcome.results}
         for r in outcome.results:
-            write_json(
-                workers_dir / f"{r.task_id}.json",
-                {
-                    "task_id": r.task_id,
-                    "success": r.success,
-                    "error": r.error,
-                    "web_search_calls": r.web_search_calls,
-                    "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
-                    "iterations": getattr(r, "iterations", 0),
-                    "duration_ms": getattr(r, "duration_ms", None),
-                    "citations": list(r.citations),
-                    "sources": getattr(r, "sources", {}) or {},
-                    "web_search_trace": list(getattr(r, "web_search_trace", ()) or ()),
-                    "web_extract_trace": list(getattr(r, "web_extract_trace", ()) or ()),
-                    "evidence": list(getattr(r, "evidence", ()) or ()),
-                    "output": r.output,
-                },
-            )
+            write_json(workers_dir / f"{r.task_id}.json", _worker_payload(r))
+
+        rounds = getattr(outcome, "rounds", None)
+        if isinstance(rounds, list) and rounds:
+            for rd in rounds:
+                if not isinstance(rd, dict):
+                    continue
+                idx = rd.get("round_index")
+                try:
+                    idx_i = int(idx)
+                except Exception:
+                    continue
+                if idx_i <= 0:
+                    continue
+                stage = str(rd.get("stage") or "")
+                round_dir = rounds_dir / f"round_{idx_i:02d}"
+                meta_round = {
+                    "round_index": idx_i,
+                    "stage": stage,
+                    "task_ids": rd.get("task_ids") or [],
+                }
+                write_json(round_dir / "meta.json", meta_round)
+                plan = rd.get("plan")
+                if isinstance(plan, dict) and plan.get("tasks"):
+                    write_json(round_dir / "plan.json", plan)
+                memo = rd.get("memo")
+                if isinstance(memo, dict):
+                    write_json(round_dir / "memo.json", memo)
+                raw = rd.get("planner_raw")
+                if isinstance(raw, str) and raw.strip():
+                    write_text(round_dir / "planner_raw.txt", raw + ("\n" if not raw.endswith("\n") else ""))
+                err = rd.get("planner_error")
+                if err:
+                    write_json(round_dir / "planner_error.json", {"error": str(err)})
+
+                task_ids = rd.get("task_ids")
+                if isinstance(task_ids, list):
+                    wanted = {str(t) for t in task_ids if isinstance(t, str)}
+                else:
+                    wanted = set()
+                if wanted:
+                    for tid in sorted(wanted):
+                        r = results_by_id.get(tid)
+                        if r is None:
+                            continue
+                        write_json(round_dir / "workers" / f"{tid}.json", _worker_payload(r))
 
         report_json = getattr(outcome, "report_json", None)
         if isinstance(report_json, dict):
@@ -127,6 +175,7 @@ def persist_research_outcome(
         "synthesizer_error_path": synthesizer_error_path,
         "synthesis_input_path": synthesis_input_path,
         "workers_dir": workers_dir,
+        "rounds_dir": rounds_dir,
         "report_path": report_path,
         "report_json_path": report_json_path,
     }
