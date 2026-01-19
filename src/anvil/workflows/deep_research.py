@@ -11,6 +11,15 @@ from common.events import EventEmitter, ProgressEvent, ResearchPlanEvent, Worker
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerTask
 from anvil.subagents.task_tool import SubagentRunner
 from anvil.subagents.parallel import WorkerResult
+from anvil.workflows.iterative_loop import (
+    ClaimToVerify,
+    Gap,
+    ReportType,
+    ResearchMemo,
+    SourceEntry,
+    detect_report_type,
+    memo_to_planner_context,
+)
 
 
 class PlanningError(RuntimeError):
@@ -182,6 +191,82 @@ Rules:
 - Only propose tasks that address specific gaps in the current findings.
 - Each task must be answerable via web search results (URLs).
 	"""
+
+
+def _gap_fill_prompt_from_memo(query: str, memo: ResearchMemo, *, max_tasks: int) -> str:
+    return f"""You are a research orchestrator.
+
+Goal: propose follow-up web searches to fill gaps after the previous round.
+
+User query:
+{query}
+
+Memo (bounded context from the previous round):
+{memo_to_planner_context(memo)}
+
+Return ONLY valid JSON in this exact shape:
+{{
+  "gaps": [
+    {{
+      "gap_type": "missing_topic|weak_evidence|missing_field|missing_candidates",
+      "description": "string",
+      "priority": 1,
+      "suggested_query": "string (optional)"
+    }}
+  ],
+  "tasks": [
+    {{
+      "id": "short_id",
+      "search_query": "web search query",
+      "instructions": "what to look for and what to return"
+    }}
+  ]
+}}
+
+Rules:
+- Provide 0 to {max_tasks} tasks.
+- Tasks MUST address the gaps you listed (use suggested_query when appropriate).
+- Prefer NEW domains and NEW query variants.
+- Return ONLY raw JSON (no markdown, no code fences).
+"""
+
+
+def _verification_prompt_from_memo(query: str, memo: ResearchMemo, *, max_tasks: int) -> str:
+    return f"""You are a research orchestrator.
+
+Goal: propose web searches to VERIFY and corroborate the most important claims so far.
+
+User query:
+{query}
+
+Memo (bounded context from previous rounds):
+{memo_to_planner_context(memo)}
+
+Return ONLY valid JSON in this exact shape:
+{{
+  "claims_to_verify": [
+    {{
+      "claim_text": "string",
+      "source_url": "https://...",
+      "confidence": "high|medium|low",
+      "verification_query": "web search query"
+    }}
+  ],
+  "tasks": [
+    {{
+      "id": "short_id",
+      "search_query": "web search query",
+      "instructions": "what to verify and what to return (must include URLs)"
+    }}
+  ]
+}}
+
+Rules:
+- Provide 0 to {max_tasks} tasks.
+- Prefer independent sources and NEW domains (not the same source_url domain).
+- Seek corroboration OR contradiction (complaints, pricing changes, independent reviews).
+- Return ONLY raw JSON (no markdown, no code fences).
+"""
 
 
 def _verification_prompt(query: str, findings: list[dict[str, Any]], *, max_tasks: int) -> str:
@@ -536,6 +621,8 @@ class DeepResearchWorkflow:
         if not query:
             raise ValueError("query is required")
 
+        report_type = detect_report_type(query)
+
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="plan", current=0, total=None, message="Planning searches"))
 
@@ -633,6 +720,15 @@ class DeepResearchWorkflow:
                 }
             )
 
+        memo_round1 = self._build_round_memo(
+            query=query,
+            report_type=report_type,
+            round_index=1,
+            tasks_completed=len(findings),
+            tasks_remaining=max(0, int(self.config.max_tasks) - len(findings)),
+            findings=findings,
+        )
+
         gap_plan = None
         gap_planner_raw = ""
         gap_planner_error = None
@@ -642,7 +738,7 @@ class DeepResearchWorkflow:
                 self.emitter.emit(
                     ProgressEvent(stage="gap", current=0, total=None, message="Planning follow-up searches")
                 )
-            gap_plan, gap_planner_raw, gap_planner_error = self._gap_fill_plan(query, findings)
+            gap_plan, gap_planner_raw, gap_planner_error = self._gap_fill_plan(query, memo_round1)
             round2_tasks = self._to_worker_tasks(query, gap_plan) if gap_plan else []
             if round2_tasks:
                 if self.emitter is not None:
@@ -701,6 +797,15 @@ class DeepResearchWorkflow:
                         }
                     )
 
+        memo_after_round2 = self._build_round_memo(
+            query=query,
+            report_type=report_type,
+            round_index=2 if round2_tasks else 1,
+            tasks_completed=len(findings),
+            tasks_remaining=0,
+            findings=findings,
+        )
+
         verify_plan = None
         verify_planner_raw = ""
         verify_planner_error = None
@@ -710,7 +815,7 @@ class DeepResearchWorkflow:
                 self.emitter.emit(
                     ProgressEvent(stage="verify", current=0, total=None, message="Planning verification searches")
                 )
-            verify_plan, verify_planner_raw, verify_planner_error = self._verification_plan(query, findings)
+            verify_plan, verify_planner_raw, verify_planner_error = self._verification_plan(query, memo_after_round2)
             verify_tasks = self._to_worker_tasks(query, verify_plan) if verify_plan else []
             if verify_tasks:
                 if self.emitter is not None:
@@ -910,6 +1015,96 @@ class DeepResearchWorkflow:
             verify_planner_error=verify_planner_error,
             synthesis_input=synthesis_input,
             curated_sources=curated_sources,
+        )
+
+    def _build_round_memo(
+        self,
+        *,
+        query: str,
+        report_type: ReportType,
+        round_index: int,
+        tasks_completed: int,
+        tasks_remaining: int,
+        findings: list[dict[str, Any]],
+    ) -> ResearchMemo:
+        urls: set[str] = set()
+        evidence_urls: set[str] = set()
+        sources: dict[str, dict[str, str]] = {}
+        pages_extracted = 0
+
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            cits = f.get("citations")
+            if isinstance(cits, list):
+                for u in cits:
+                    if isinstance(u, str) and u.startswith("http"):
+                        urls.add(u)
+            srcs = f.get("sources")
+            if isinstance(srcs, dict):
+                for u, meta in srcs.items():
+                    if isinstance(u, str) and u.startswith("http") and isinstance(meta, dict):
+                        sources[u] = {k: str(v) for k, v in meta.items() if isinstance(k, str)}
+            evs = f.get("evidence")
+            if isinstance(evs, list):
+                for ev in evs:
+                    if not isinstance(ev, dict):
+                        continue
+                    u = ev.get("url")
+                    if isinstance(u, str) and u.startswith("http"):
+                        evidence_urls.add(u)
+                pages_extracted += len(
+                    [ev for ev in evs if isinstance(ev, dict) and isinstance(ev.get("url"), str)]
+                )
+
+        domains = {urlparse(u).netloc.lower().strip() for u in urls if isinstance(u, str) and u.startswith("http")}
+
+        def _relevance(u: str) -> str:
+            path = urlparse(u).path.lower()
+            if any(k in path for k in ("/pricing", "pricing", "plans", "case-study", "case-studies", "customer")):
+                return "pricing"
+            if any(k in path for k in ("/docs", "/spec", "/reference", "/api", "/security")):
+                return "reference"
+            return "overview"
+
+        sources_summary: list[SourceEntry] = []
+        per_domain: dict[str, int] = {}
+        ordered_urls = list(evidence_urls) + [u for u in urls if u not in evidence_urls]
+        for u in ordered_urls:
+            if not isinstance(u, str) or not u.startswith("http"):
+                continue
+            d = urlparse(u).netloc.lower().strip()
+            if not d:
+                continue
+            if per_domain.get(d, 0) >= 3:
+                continue
+            meta = sources.get(u, {})
+            sources_summary.append(
+                SourceEntry(
+                    url=u,
+                    domain=d,
+                    title=str(meta.get("title") or ""),
+                    has_evidence=u in evidence_urls,
+                    relevance=_relevance(u),
+                )
+            )
+            per_domain[d] = per_domain.get(d, 0) + 1
+            if len(sources_summary) >= 20:
+                break
+
+        return ResearchMemo(
+            query=query,
+            report_type=report_type,
+            round_index=int(round_index),
+            tasks_completed=int(tasks_completed),
+            tasks_remaining=int(tasks_remaining),
+            unique_citations=len(urls),
+            unique_domains=len({d for d in domains if d}),
+            pages_extracted=int(pages_extracted),
+            themes_covered=(),
+            sources_summary=tuple(sources_summary),
+            gaps=(),
+            claims_to_verify=(),
         )
 
     def _plan(self, query: str, *, max_tasks: int, min_tasks: int) -> tuple[dict[str, Any], str, str | None]:
@@ -1158,13 +1353,17 @@ class DeepResearchWorkflow:
             )
         )
 
-    def _gap_fill_plan(self, query: str, findings: list[dict[str, Any]]) -> tuple[dict[str, Any], str, str | None]:
+    def _gap_fill_plan(self, query: str, memo: ResearchMemo) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
             model=self.config.model,
             messages=[
                 {
                     "role": "user",
-                    "content": _gap_fill_prompt(query, findings, max_tasks=max(0, int(self.config.round2_max_tasks))),
+                    "content": _gap_fill_prompt_from_memo(
+                        query,
+                        memo,
+                        max_tasks=max(0, int(self.config.round2_max_tasks)),
+                    ),
                 }
             ],
             temperature=0.2,
@@ -1177,6 +1376,7 @@ class DeepResearchWorkflow:
             plan = self._parse_planner_json(content)
         except Exception as e:
             raise PlanningError(f"Gap planner returned invalid JSON: {e}", raw=content) from e
+        # Accept both the legacy shape {"tasks":[...]} and the new shape {"gaps":[...],"tasks":[...]}.
         validated = self._validate_plan(plan, min_tasks=0)
         tasks = validated.get("tasks") or []
         # Prefix task IDs to avoid collisions with round 1.
@@ -1185,15 +1385,15 @@ class DeepResearchWorkflow:
                 t["id"] = f"r2_{t['id']}"
         return {"tasks": tasks[: max(0, int(self.config.round2_max_tasks))]}, content, None
 
-    def _verification_plan(self, query: str, findings: list[dict[str, Any]]) -> tuple[dict[str, Any], str, str | None]:
+    def _verification_plan(self, query: str, memo: ResearchMemo) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
             model=self.config.model,
             messages=[
                 {
                     "role": "user",
-                    "content": _verification_prompt(
+                    "content": _verification_prompt_from_memo(
                         query,
-                        findings,
+                        memo,
                         max_tasks=max(0, int(self.config.verify_max_tasks)),
                     ),
                 }
