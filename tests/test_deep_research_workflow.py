@@ -7,8 +7,9 @@ from anvil.workflows.deep_research import (
     DeepResearchRunError,
     DeepResearchWorkflow,
     PlanningError,
+    SynthesisError,
+    sanitize_snippet,
 )
-from anvil.workflows.deep_research import _select_diverse_findings, sanitize_snippet
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerResult, WorkerTask
 
 
@@ -390,169 +391,6 @@ def test_sanitize_snippet_removes_inline_headings_and_bullets():
     assert " * " not in out
 
 
-def test_select_diverse_findings_prefers_new_urls_and_domains():
-    candidates = [
-        {
-            "claim": "a",
-            "evidence": [
-                {"url": "https://a.com/1", "quote": "q"},
-                {"url": "https://a.com/2", "quote": "q"},
-            ],
-        },
-        {
-            "claim": "b",
-            "evidence": [
-                {"url": "https://b.com/1", "quote": "q"},
-                {"url": "https://c.com/1", "quote": "q"},
-            ],
-        },
-        {
-            "claim": "c",
-            "evidence": [
-                {"url": "https://a.com/1", "quote": "q"},
-                {"url": "https://d.com/1", "quote": "q"},
-            ],
-        },
-    ]
-    out = _select_diverse_findings(
-        candidates,
-        target_findings=2,
-        min_unique_urls_target=0,
-        min_unique_domains_target=0,
-    )
-    assert len(out) == 2
-    urls = {e["url"] for f in out for e in (f.get("evidence") or []) if isinstance(e, dict)}
-    domains = {u.split("/")[2] for u in urls}
-    # Expect at least 2 domains covered with two findings.
-    assert len(domains) >= 2
-
-
-def test_deep_multi_pass_section_writer_retries_on_truncated_json(monkeypatch):
-    from common import llm as common_llm
-
-    calls = {"n": 0}
-
-    def fake_completion(**kwargs):
-        calls["n"] += 1
-
-        class Msg:
-            def __init__(self, content):
-                self.content = content
-
-        class Choice:
-            def __init__(self, content):
-                self.message = Msg(content)
-
-        class Resp:
-            def __init__(self, content):
-                self.choices = [Choice(content)]
-
-        prompt = kwargs["messages"][0]["content"]
-        # planning
-        if "research orchestrator" in prompt and '"tasks"' in prompt:
-            return Resp(
-                json.dumps(
-                    {
-                        "tasks": [
-                            {"id": "task1", "search_query": "q1", "instructions": "i1"},
-                            {"id": "task2", "search_query": "q2", "instructions": "i2"},
-                            {"id": "task3", "search_query": "q3", "instructions": "i3"},
-                        ]
-                    }
-                )
-            )
-        # outline
-        if "research outline planner" in prompt:
-            return Resp(
-                json.dumps(
-                    {"sections": [{"id": "s1", "title": "Section", "task_ids": ["task1", "task2"]}]}
-                )
-            )
-        # section writer: first call returns truncated fenced json; second call returns valid raw json
-        if "research writer for one section" in prompt:
-            # retry call includes assistant message; detect by messages length
-            if len(kwargs.get("messages") or []) >= 3:
-                return Resp(
-                    json.dumps(
-                        {
-                            "findings": [
-                                {
-                                    "claim": "c",
-                                    "evidence": [
-                                        {"url": "https://example.com/a", "quote": "QUOTE"},
-                                    ],
-                                }
-                            ]
-                        }
-                    )
-                )
-            return Resp("```json\n{\"findings\": [{\"claim\": \"c\"")  # intentionally cut off
-        # summary
-        if "research summarizer" in prompt:
-            return Resp(
-                json.dumps(
-                    {
-                        "title": "REPORT",
-                        "summary_bullets": ["a"],
-                        "open_questions": [],
-                    }
-                )
-            )
-        return Resp("{}")
-
-    monkeypatch.setattr(common_llm, "completion", fake_completion)
-
-    class EvidenceRunner:
-        def spawn_parallel(self, tasks, **kwargs):
-            # Provide evidence excerpts that contain the quote substring.
-            return [
-                WorkerResult(
-                    task_id=t.id,
-                    output="x",
-                    citations=("https://example.com/a",),
-                    sources={"https://example.com/a": {"title": "t", "snippet": "s"}},
-                    web_search_calls=2,
-                    web_search_trace=(
-                        {"success": True, "results": [{"url": "https://example.com/a", "title": "t", "score": 0.9, "snippet": "s"}]},
-                    ),
-                    web_extract_calls=1,
-                    evidence=(
-                        {"url": "https://example.com/a", "title": "t", "excerpt": "xx QUOTE yy"},
-                    ),
-                    success=True,
-                )
-                for t in tasks
-            ]
-
-    wf = DeepResearchWorkflow(
-        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
-        parallel_runner=EvidenceRunner(),  # type: ignore[arg-type]
-        config=DeepResearchConfig(
-            model="gpt-4o",
-            max_workers=1,
-            worker_max_iterations=1,
-            worker_timeout_s=10.0,
-            max_rounds=1,
-            max_tasks_total=3,
-            max_tasks_per_round=3,
-            verify_tasks_round3=0,
-            enable_deep_read=True,
-            max_web_extract_calls=1,
-            require_quote_per_claim=True,
-            multi_pass_synthesis=True,
-            min_total_domains=0,
-            min_total_citations=1,
-            report_min_unique_citations_target=1,
-            report_min_unique_domains_target=1,
-            report_findings_target=1,
-        ),
-        emitter=None,
-    )
-    outcome = wf.run("query")
-    assert outcome.report_markdown.startswith("# REPORT")
-    assert calls["n"] >= 4  # plan + outline + section (+retry) + summary
-
-
 def test_deep_research_wraps_provider_errors_as_run_error(monkeypatch):
     from common import llm as common_llm
 
@@ -582,7 +420,9 @@ def test_deep_research_wraps_provider_errors_as_run_error(monkeypatch):
                     }
                 )
             )
-        if "research outline planner" in prompt:
+        if "refining a research draft" in prompt:
+            return Resp("Draft\n\n## Still Missing\n- (none)\n")
+        if "research synthesizer" in prompt:
             raise RuntimeError("ContextWindowExceededError: too many tokens")
         return Resp("{}")
 
@@ -620,7 +460,6 @@ def test_deep_research_wraps_provider_errors_as_run_error(monkeypatch):
             enable_deep_read=True,
             max_web_extract_calls=1,
             require_quote_per_claim=True,
-            multi_pass_synthesis=True,
             min_total_domains=0,
             min_total_citations=1,
         ),
@@ -1328,18 +1167,6 @@ def test_catalog_synthesis_payload_validation_accepts_grounded_items():
     )
 
     allowed = {"https://example.com/provider", "https://example.com/case"}
-    evidence = [
-        {
-            "url": "https://example.com/provider",
-            "title": "Provider",
-            "excerpt": "Pricing starts at $500/month and includes onboarding.",
-        },
-        {
-            "url": "https://example.com/case",
-            "title": "Case Study",
-            "excerpt": "Case study: improved conversion by 25% within 30 days.",
-        },
-    ]
     payload = {
         "title": "Catalog",
         "summary_bullets": ["a"],
@@ -1355,21 +1182,12 @@ def test_catalog_synthesis_payload_validation_accepts_grounded_items():
                 "why_evergreen": "Conversion is a permanent lever.",
                 "replicable_with": "LLMs + analytics + Zapier/Make",
                 "proof_links": ["https://example.com/case"],
-                "evidence": [
-                    {"url": "https://example.com/provider", "quote": "Pricing starts at $500/month"},
-                ],
             }
         ],
         "open_questions": [],
     }
 
-    wf._validate_catalog_payload(  # noqa: SLF001
-        payload=payload,
-        allowed_urls=allowed,
-        required_fields={"name", "website_url", "problem_solved", "pricing_model", "proof_links"},
-        evidence=evidence,
-        target_items=1,
-    )
+    wf._validate_catalog_shape(payload, target_items=1, allowed_urls=allowed)  # noqa: SLF001
 
 
 def test_catalog_synthesis_payload_validation_rejects_unsupported_urls():
@@ -1381,7 +1199,6 @@ def test_catalog_synthesis_payload_validation_rejects_unsupported_urls():
     )
 
     allowed = {"https://example.com/provider"}
-    evidence = [{"url": "https://example.com/provider", "title": "Provider", "excerpt": "hello world"}]
     payload = {
         "title": "Catalog",
         "summary_bullets": [],
@@ -1397,91 +1214,10 @@ def test_catalog_synthesis_payload_validation_rejects_unsupported_urls():
                 "why_evergreen": "e",
                 "replicable_with": "r",
                 "proof_links": ["https://example.com/provider"],
-                "evidence": [{"url": "https://example.com/provider", "quote": "hello"}],
             }
         ],
         "open_questions": [],
     }
 
-    with pytest.raises(Exception):
-        wf._validate_catalog_payload(  # noqa: SLF001
-            payload=payload,
-            allowed_urls=allowed,
-            required_fields={"name", "website_url", "problem_solved", "pricing_model", "proof_links"},
-            evidence=evidence,
-            target_items=1,
-        )
-
-
-def test_narrative_memo_includes_coverage_gaps():
-    from anvil.workflows.iterative_loop import ReportType
-
-    wf = DeepResearchWorkflow(
-        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
-        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
-        config=DeepResearchConfig(
-            model="gpt-4o",
-            min_total_domains=5,
-            min_total_citations=10,
-        ),
-        emitter=None,
-    )
-
-    memo = wf._build_round_memo(  # noqa: SLF001
-        query="what is mcp",
-        report_type=ReportType.NARRATIVE,
-        round_index=1,
-        tasks_completed=1,
-        tasks_remaining=5,
-        findings=[
-            {
-                "task_id": "task1",
-                "success": True,
-                "output": "x",
-                "citations": ["https://example.com/a"],
-                "sources": {},
-                "evidence": [],
-            }
-        ],
-    )
-
-    gap_types = {g.gap_type for g in memo.gaps}
-    assert "coverage_domains" in gap_types
-    assert "coverage_citations" in gap_types
-
-
-def test_narrative_memo_includes_missing_evidence_gap_when_required():
-    from anvil.workflows.iterative_loop import ReportType
-
-    wf = DeepResearchWorkflow(
-        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
-        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
-        config=DeepResearchConfig(
-            model="gpt-4o",
-            enable_deep_read=True,
-            require_quote_per_claim=True,
-            min_total_domains=0,
-            min_total_citations=0,
-        ),
-        emitter=None,
-    )
-
-    memo = wf._build_round_memo(  # noqa: SLF001
-        query="what is mcp",
-        report_type=ReportType.NARRATIVE,
-        round_index=1,
-        tasks_completed=1,
-        tasks_remaining=5,
-        findings=[
-            {
-                "task_id": "task1",
-                "success": True,
-                "output": "x",
-                "citations": ["https://example.com/a"],
-                "sources": {},
-                "evidence": [],
-            }
-        ],
-    )
-
-    assert any(g.gap_type == "missing_evidence" for g in memo.gaps)
+    with pytest.raises(SynthesisError):
+        wf._validate_catalog_shape(payload, target_items=1, allowed_urls=allowed)  # noqa: SLF001

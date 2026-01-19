@@ -3,7 +3,6 @@ from __future__ import annotations
 """Public deep-research module."""
 
 from anvil.workflows.deep_research_v3 import DeepResearchWorkflow  # noqa: F401
-from anvil.workflows.deep_research_workflow import _select_diverse_findings  # noqa: F401
 from anvil.workflows.deep_research_types import (  # noqa: F401
     DeepResearchConfig,
     DeepResearchOutcome,
@@ -20,6 +19,5 @@ __all__ = [
     "DeepResearchWorkflow",
     "PlanningError",
     "SynthesisError",
-    "_select_diverse_findings",
     "sanitize_snippet",
 ]

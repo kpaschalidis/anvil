@@ -8,13 +8,10 @@ from common.events import ProgressEvent
 
 from anvil.subagents.parallel import WorkerTask
 from anvil.workflows.deep_research_prompts import (
-    _gap_fill_prompt_from_memo,
     _planning_prompt,
-    _verification_prompt_from_memo,
 )
-from anvil.workflows.deep_research_types import PlanningError
+from anvil.workflows.deep_research_types import PlanningError, ReportType, detect_report_type
 from anvil.workflows.deep_research_utils import parse_json_with_retry
-from anvil.workflows.iterative_loop import ReportType, ResearchMemo, detect_report_type
 
 
 class DeepResearchPlanningMixin:
@@ -162,81 +159,6 @@ Rules:
             return self._fallback_plan(query), content, msg
 
         return validated, content, None
-
-    def _gap_fill_plan(
-        self,
-        query: str,
-        memo: ResearchMemo,
-        *,
-        max_tasks: int,
-    ) -> tuple[dict[str, Any], str, str | None]:
-        resp = llm.completion(
-            model=self.config.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": _gap_fill_prompt_from_memo(
-                        query,
-                        memo,
-                        max_tasks=max(0, int(max_tasks)),
-                    ),
-                }
-            ],
-            temperature=0.2,
-            max_tokens=800,
-        )
-        content = (resp.choices[0].message.content or "").strip()
-        if not content:
-            raise PlanningError("Gap planner returned an empty response.", raw=content)
-        try:
-            plan = parse_json_with_retry(content, model=self.config.model)
-        except Exception as e:
-            raise PlanningError(f"Gap planner returned invalid JSON: {e}", raw=content) from e
-        # Accept both the legacy shape {"tasks":[...]} and the new shape {"gaps":[...],"tasks":[...]}.
-        validated = self._validate_plan(plan, min_tasks=0)
-        tasks = validated.get("tasks") or []
-        # Prefix task IDs to avoid collisions with round 1.
-        for t in tasks:
-            if isinstance(t, dict) and isinstance(t.get("id"), str) and not t["id"].startswith("r2_"):
-                t["id"] = f"r2_{t['id']}"
-        return {"tasks": tasks[: max(0, int(max_tasks))]}, content, None
-
-    def _verification_plan(
-        self,
-        query: str,
-        memo: ResearchMemo,
-        *,
-        max_tasks: int,
-        min_tasks: int = 0,
-    ) -> tuple[dict[str, Any], str, str | None]:
-        resp = llm.completion(
-            model=self.config.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": _verification_prompt_from_memo(
-                        query,
-                        memo,
-                        max_tasks=max(0, int(max_tasks)),
-                    ),
-                }
-            ],
-            temperature=0.2,
-            max_tokens=800,
-        )
-        content = (resp.choices[0].message.content or "").strip()
-        if not content:
-            raise PlanningError("Verification planner returned an empty response.", raw=content)
-        try:
-            plan = parse_json_with_retry(content, model=self.config.model)
-        except Exception as e:
-            raise PlanningError(f"Verification planner returned invalid JSON: {e}", raw=content) from e
-        validated = self._validate_plan(plan, min_tasks=max(0, int(min_tasks)))
-        tasks = validated.get("tasks") or []
-        for t in tasks:
-            if isinstance(t, dict) and isinstance(t.get("id"), str) and not str(t["id"]).startswith("v_"):
-                t["id"] = f"v_{t['id']}"
-        return {"tasks": tasks[: max(0, int(max_tasks))]}, content, None
 
     def _parse_planner_json(self, content: str) -> Any:
         try:

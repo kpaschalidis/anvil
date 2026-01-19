@@ -8,12 +8,72 @@ from common import llm
 from common.events import ProgressEvent
 
 from anvil.workflows.deep_research_prompts import _allowed_sources_block, _synthesis_prompt
-from anvil.workflows.deep_research_types import SynthesisError
+from anvil.workflows.deep_research_prompts import _catalog_prompt
+from anvil.workflows.deep_research_types import ReportType, SynthesisError, detect_target_items
 from anvil.workflows.deep_research_utils import parse_json_with_retry
-from anvil.workflows.iterative_loop import ReportType
 
 
 class DeepResearchSynthesisMixin:
+    def _catalog_synthesize_and_render(
+        self,
+        query: str,
+        *,
+        findings: list[dict[str, Any]],
+        citations: list[str],
+    ) -> tuple[str, dict[str, Any]]:
+        allowed = {u for u in citations if isinstance(u, str) and u.startswith("http")}
+        target_items = detect_target_items(query) or 5
+
+        prompt = _catalog_prompt(
+            query,
+            target_items=int(target_items),
+            findings=findings,
+            allowed_urls=sorted(allowed),
+        )
+        resp = llm.completion(
+            model=self.config.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=1400,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        if not raw:
+            raise SynthesisError("Catalog synthesis returned an empty response", raw=raw, stage="synthesize")
+
+        payload = parse_json_with_retry(raw, model=self.config.model)
+        self._validate_catalog_shape(payload, target_items=int(target_items), allowed_urls=allowed)
+
+        md = self._render_catalog_payload(payload=payload, citations=sorted(allowed), evidence=[])
+        return md, payload
+
+    def _validate_catalog_shape(self, payload: dict[str, Any], *, target_items: int, allowed_urls: set[str]) -> None:
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise SynthesisError("Catalog output missing 'items' list", raw=json.dumps(payload, ensure_ascii=False))
+        if len(items) != int(target_items):
+            raise SynthesisError(
+                f"Expected {int(target_items)} items, got {len(items)}",
+                raw=json.dumps(payload, ensure_ascii=False),
+            )
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise SynthesisError(f"Item {idx} is not an object", raw=json.dumps(payload, ensure_ascii=False))
+            name = item.get("name")
+            website_url = item.get("website_url")
+            if not isinstance(name, str) or not name.strip():
+                raise SynthesisError(f"Item {idx} missing name", raw=json.dumps(payload, ensure_ascii=False))
+            if not isinstance(website_url, str) or website_url not in allowed_urls:
+                raise SynthesisError(
+                    f"Item {idx} website_url must be one of the allowed URLs",
+                    raw=json.dumps(payload, ensure_ascii=False),
+                )
+            proof = item.get("proof_links") or []
+            proof_urls = [u for u in proof if isinstance(u, str) and u in allowed_urls]
+            if not proof_urls:
+                raise SynthesisError(
+                    f"Item {idx} missing proof_links from allowed URLs",
+                    raw=json.dumps(payload, ensure_ascii=False),
+                )
     def _synthesize_and_render(
         self,
         query: str,
@@ -24,10 +84,6 @@ class DeepResearchSynthesisMixin:
     ) -> tuple[str, dict[str, Any] | None]:
         if report_type == ReportType.CATALOG:
             md, payload = self._catalog_synthesize_and_render(query, findings=findings, citations=citations)
-            return md, payload
-
-        if self.config.require_quote_per_claim and self.config.multi_pass_synthesis and not self.config.best_effort:
-            md, payload = self._multi_pass_synthesize_and_render(query, findings, citations)
             return md, payload
 
         prompt = self._synthesis_prompt_with_constraints(query, findings, allowed_urls=citations)

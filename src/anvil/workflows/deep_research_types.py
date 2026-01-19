@@ -2,9 +2,67 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from anvil.subagents.parallel import WorkerResult, WorkerTask
+
+
+class ReportType(str, Enum):
+    NARRATIVE = "narrative"
+    CATALOG = "catalog"
+
+
+_CATALOG_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE | re.DOTALL)
+    for p in (
+        r"\bidentify\s+\d+\b",
+        r"\bfind\s+\d+\b",
+        r"\blist\s+\d+\b",
+        r"\bfor each\b.*\binclude\b",
+        r"\brequired\s+(details|fields)\b",
+        r"\bprovider\b.*\bwebsite\b.*\burl\b",
+        r"\bpricing\b.*\bcase.?stud",
+        r"\bpricing\b.*\btestimonial",
+        r"\bpricing\b.*\bretainer\b",
+    )
+)
+
+
+def detect_report_type(query: str, *, explicit: str | None = None) -> ReportType:
+    if explicit:
+        v = explicit.strip().lower()
+        if v in (ReportType.NARRATIVE.value, ReportType.CATALOG.value):
+            return ReportType(v)
+        raise ValueError(f"unknown report type: {explicit}")
+
+    q = (query or "").strip()
+    if not q:
+        return ReportType.NARRATIVE
+
+    for pat in _CATALOG_PATTERNS:
+        if pat.search(q):
+            return ReportType.CATALOG
+
+    return ReportType.NARRATIVE
+
+
+def detect_target_items(query: str) -> int | None:
+    """Best-effort: infer a requested item count for catalog-style prompts."""
+    q = (query or "").strip().lower()
+    if not q:
+        return None
+
+    m = re.search(r"\b(?:identify|list|find)\s+(\d{1,3})\b", q)
+    if not m:
+        return None
+    try:
+        n = int(m.group(1))
+    except Exception:
+        return None
+    if n <= 0:
+        return None
+    return min(n, 50)
 
 
 class PlanningError(RuntimeError):

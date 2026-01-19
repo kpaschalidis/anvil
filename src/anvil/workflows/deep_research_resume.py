@@ -5,7 +5,7 @@ from pathlib import Path
 
 from anvil.subagents.parallel import WorkerResult
 from anvil.workflows.deep_research import DeepResearchOutcome, DeepResearchWorkflow
-from anvil.workflows.iterative_loop import detect_report_type
+from anvil.workflows.deep_research_types import detect_report_type
 
 
 def _load_json(path: Path) -> dict:

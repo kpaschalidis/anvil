@@ -4,7 +4,7 @@ import json
 from typing import Any
 from urllib.parse import urlparse
 
-from anvil.workflows.iterative_loop import ReportType, ResearchMemo, memo_to_planner_context
+from anvil.workflows.deep_research_types import ReportType
 
 
 def _planning_prompt(query: str, *, max_tasks: int, report_type: ReportType = ReportType.NARRATIVE) -> str:
@@ -67,82 +67,6 @@ Rules:
 - Only propose tasks that address specific gaps in the current findings.
 - Each task must be answerable via web search results (URLs).
 		"""
-
-
-def _gap_fill_prompt_from_memo(query: str, memo: ResearchMemo, *, max_tasks: int) -> str:
-    return f"""You are a research orchestrator.
-
-Goal: propose follow-up web searches to fill gaps after the previous round.
-
-User query:
-{query}
-
-Memo (bounded context from the previous round):
-{memo_to_planner_context(memo)}
-
-Return ONLY valid JSON in this exact shape:
-{{
-  "gaps": [
-    {{
-      "gap_type": "missing_topic|weak_evidence|missing_field|missing_candidates",
-      "description": "string",
-      "priority": 1,
-      "suggested_query": "string (optional)"
-    }}
-  ],
-  "tasks": [
-    {{
-      "id": "short_id",
-      "search_query": "web search query",
-      "instructions": "what to look for and what to return"
-    }}
-  ]
-}}
-
-Rules:
-- Provide 0 to {max_tasks} tasks.
-- Tasks MUST address the gaps you listed (use suggested_query when appropriate).
-- Prefer NEW domains and NEW query variants.
-- Return ONLY raw JSON (no markdown, no code fences).
-"""
-
-
-def _verification_prompt_from_memo(query: str, memo: ResearchMemo, *, max_tasks: int) -> str:
-    return f"""You are a research orchestrator.
-
-Goal: propose web searches to VERIFY and corroborate the most important claims so far.
-
-User query:
-{query}
-
-Memo (bounded context from previous rounds):
-{memo_to_planner_context(memo)}
-
-Return ONLY valid JSON in this exact shape:
-{{
-  "claims_to_verify": [
-    {{
-      "claim_text": "string",
-      "source_url": "https://...",
-      "confidence": "high|medium|low",
-      "verification_query": "web search query"
-    }}
-  ],
-  "tasks": [
-    {{
-      "id": "short_id",
-      "search_query": "web search query",
-      "instructions": "what to verify and what to return (must include URLs)"
-    }}
-  ]
-}}
-
-Rules:
-- Provide 0 to {max_tasks} tasks.
-- Prefer independent sources and NEW domains (not the same source_url domain).
-- Seek corroboration OR contradiction (complaints, pricing changes, independent reviews).
-- Return ONLY raw JSON (no markdown, no code fences).
-"""
 
 
 def _verification_prompt(query: str, findings: list[dict[str, Any]], *, max_tasks: int) -> str:
@@ -246,8 +170,15 @@ def _allowed_sources_block(urls: list[str], *, max_items: int = 60) -> str:
     return "\n".join(lines)
 
 
-def _outline_prompt(query: str, findings: list[dict[str, Any]]) -> str:
-    return f"""You are a research outline planner.
+def _catalog_prompt(
+    query: str,
+    *,
+    target_items: int,
+    findings: list[dict[str, Any]],
+    allowed_urls: list[str],
+) -> str:
+    allowed_block = _allowed_sources_block(allowed_urls, max_items=60)
+    return f"""You are a research writer producing a structured catalog of service business models.
 
 User query:
 {query}
@@ -255,124 +186,35 @@ User query:
 Worker findings (JSON):
 {json.dumps(findings, ensure_ascii=False)}
 
-Return ONLY valid JSON:
-{{
-  "sections": [
-    {{
-      "id": "s1",
-      "title": "string",
-      "task_ids": ["task1", "task2"]
-    }}
-  ]
-}}
-
-Rules:
-- Provide 4 to 8 sections.
-- Each section must reference 1+ existing task_ids from the worker findings.
-- Prefer a logical structure: context → tools/workflows → pain points → compliance → recommendations → risks.
-"""
-
-
-def _section_findings_prompt(query: str, *, section_title: str, evidence: list[dict[str, Any]]) -> str:
-    return f"""You are a research writer for one section of a report.
-
-User query:
-{query}
-
-Section:
-{section_title}
-
-Evidence (JSON). Quotes MUST be copied from these excerpts exactly:
-{json.dumps(evidence, ensure_ascii=False)}
-
-Return ONLY valid JSON:
-{{
-  "findings": [
-    {{
-      "claim": "string",
-      "evidence": [
-        {{"url": "https://...", "quote": "copied excerpt"}}
-      ]
-    }}
-  ]
-}}
-
-Rules:
-- Provide 3 to 5 findings for this section (keep output compact).
-- Every finding must include 1-2 evidence items (prefer 2 when possible).
-- Every evidence.url must appear in the provided Evidence list.
-- Every evidence.quote must be a substring copied from that URL's excerpt.
-- Keep each `claim` short (<= 200 chars) and each `quote` short (<= 240 chars). If the excerpt is long, select a shorter substring.
-- Return ONLY raw JSON (no markdown, no code fences).
-"""
-
-
-def _summary_prompt(query: str, *, claims: list[str]) -> str:
-    return f"""You are a research summarizer.
-
-User query:
-{query}
-
-Accepted claims (bullet list):
-{json.dumps(claims, ensure_ascii=False)}
-
-Return ONLY valid JSON:
-{{
-  "title": "string",
-  "summary_bullets": ["string"],
-  "open_questions": ["string"]
-}}
-
-Rules:
-- Write 5 to 10 summary bullets grounded in the claims.
-- Write 3 to 8 open questions for follow-up research.
-"""
-
-
-def _catalog_prompt(
-    query: str,
-    *,
-    target_items: int,
-    required_fields: list[str],
-    evidence: list[dict[str, Any]],
-) -> str:
-    fields_str = ", ".join(required_fields) if required_fields else ""
-    return f"""You are a research writer producing a structured catalog of service business models.
-
-User query:
-{query}
-
-Evidence (JSON). You MUST only use URLs from this list, and every quote MUST be copied from the excerpt exactly:
-{json.dumps(evidence, ensure_ascii=False)}
-
 Return ONLY valid JSON (no markdown, no code fences), in this exact shape:
 {{
   "title": "string",
   "summary_bullets": ["string"],
   "items": [
     {{
-      "service_name": "string",
-      "provider_name": "string",
-      "provider_url": "https://...",
-      "pricing": "string",
-      "problem": "string",
-      "ai_how": "string",
-      "delivery_model": "retainer|project|usage|other",
-      "evergreen_why": "string",
-      "replicable_how": "string",
-      "proof_urls": ["https://..."]
+      "name": "string",
+      "provider": "string",
+      "website_url": "https://...",
+      "problem_solved": "string",
+      "who_its_for": "string",
+      "how_ai_is_used": "string",
+      "pricing_model": "string",
+      "why_evergreen": "string",
+      "replicable_with": "string",
+      "proof_links": ["https://..."]
     }}
   ],
-  "notes": "string"
+  "open_questions": ["string"]
 }}
 
 Rules:
-- Produce exactly {target_items} items.
-- Every URL field MUST be present in the evidence list URLs.
-- Every item MUST include at least one `proof_url` (case study/testimonial/service page).
-- If a field is unknown, write an empty string, but prefer to find it.
+- Produce exactly {int(target_items)} items.
+- Every URL field MUST be a URL from the Allowed citation URLs list below.
+- Each item MUST include at least one `proof_link` URL.
 - Keep text concise but specific.
-- Required fields for this request: {fields_str}
+- Do not invent URLs; copy them EXACTLY.
+
+{allowed_block}
 """
 
 
