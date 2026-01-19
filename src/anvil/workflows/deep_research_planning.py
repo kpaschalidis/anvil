@@ -13,6 +13,7 @@ from anvil.workflows.deep_research_prompts import (
     _verification_prompt_from_memo,
 )
 from anvil.workflows.deep_research_types import PlanningError
+from anvil.workflows.deep_research_utils import parse_json_with_retry
 from anvil.workflows.iterative_loop import ReportType, ResearchMemo, detect_report_type
 
 
@@ -54,7 +55,7 @@ class DeepResearchPlanningMixin:
                 )
             return self._fallback_plan(query), content, msg
         try:
-            plan = self._parse_planner_json(content)
+            plan = parse_json_with_retry(content, model=self.config.model)
         except Exception as e:
             msg = f"Planner returned invalid JSON: {e}"
             if not self.config.best_effort:
@@ -115,7 +116,7 @@ class DeepResearchPlanningMixin:
         if not content:
             raise PlanningError("Gap planner returned an empty response.", raw=content)
         try:
-            plan = self._parse_planner_json(content)
+            plan = parse_json_with_retry(content, model=self.config.model)
         except Exception as e:
             raise PlanningError(f"Gap planner returned invalid JSON: {e}", raw=content) from e
         # Accept both the legacy shape {"tasks":[...]} and the new shape {"gaps":[...],"tasks":[...]}.
@@ -154,7 +155,7 @@ class DeepResearchPlanningMixin:
         if not content:
             raise PlanningError("Verification planner returned an empty response.", raw=content)
         try:
-            plan = self._parse_planner_json(content)
+            plan = parse_json_with_retry(content, model=self.config.model)
         except Exception as e:
             raise PlanningError(f"Verification planner returned invalid JSON: {e}", raw=content) from e
         validated = self._validate_plan(plan, min_tasks=max(0, int(min_tasks)))

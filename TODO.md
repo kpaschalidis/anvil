@@ -54,3 +54,14 @@
 - [x] Add worker retry policy (1 retry on transient failures)
 - [x] Update logs for round headers + stop reason
 - [x] Add tests for catalog + round artifacts
+
+## Deep Research Simplification v3 (In Progress)
+- [ ] Phase 1: Add `deep_research_utils.py` (JSON retry + top-findings selection)
+- [ ] Phase 2: Remove complex catalog infra (keep detection + minimal shape validator)
+- [ ] Phase 3: Replace fixed rounds with draft-centric loop (track seen queries + 2-signal saturation)
+- [ ] Phase 4: Remove multi-pass synthesis (single-pass only)
+- [ ] Phase 5: Simplify validation (keep grounding, use JSON retry utility)
+- [ ] Phase 6: Remove worker continuation
+- [ ] Phase 7: Shrink files (keep split) + delete unused modules
+- [ ] Update tests for new loop behavior
+- [ ] Run full test suite + manual smoke run

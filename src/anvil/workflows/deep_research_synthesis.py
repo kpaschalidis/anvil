@@ -9,6 +9,7 @@ from common.events import ProgressEvent
 
 from anvil.workflows.deep_research_prompts import _allowed_sources_block, _synthesis_prompt
 from anvil.workflows.deep_research_types import SynthesisError
+from anvil.workflows.deep_research_utils import parse_json_with_retry
 from anvil.workflows.iterative_loop import ReportType
 
 
@@ -31,39 +32,19 @@ class DeepResearchSynthesisMixin:
 
         prompt = self._synthesis_prompt_with_constraints(query, findings, allowed_urls=citations)
         payload: dict[str, Any] | None = None
-        raw = ""
+        resp = llm.completion(
+            model=self.config.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=1200,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
         last_err: Exception | None = None
-        for attempt in range(2):
-            resp = llm.completion(
-                model=self.config.model,
-                messages=(
-                    [{"role": "user", "content": prompt}]
-                    if attempt == 0 or not raw
-                    else [
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": raw},
-                        {
-                            "role": "user",
-                            "content": "Your previous response was invalid JSON. Return ONLY valid raw JSON matching the schema (no markdown).",
-                        },
-                    ]
-                ),
-                temperature=0.2 if attempt == 0 else 0.0,
-                max_tokens=1200,
-            )
-            raw = (resp.choices[0].message.content or "").strip()
-            if not raw:
-                last_err = ValueError("empty response")
-                continue
+        if raw:
             try:
-                parsed = self._parse_planner_json(raw)
-                if isinstance(parsed, dict):
-                    payload = parsed
-                    break
-                last_err = ValueError("response was not a JSON object")
+                payload = parse_json_with_retry(raw, model=self.config.model)
             except Exception as e:
                 last_err = e
-                continue
 
         if payload is None and not self.config.best_effort:
             detail = f": {last_err}" if last_err else ""
@@ -273,4 +254,3 @@ class DeepResearchSynthesisMixin:
             "unique_domains": len(domains),
             "target_per_finding": target_per_finding,
         }
-
