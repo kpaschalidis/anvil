@@ -759,6 +759,19 @@ class DeepResearchWorkflow:
             tasks_remaining=max(0, max_tasks_total - tasks_completed),
             findings=findings,
         )
+        if self.emitter is not None:
+            self.emitter.emit(
+                ProgressEvent(
+                    stage="round",
+                    current=1,
+                    total=max_rounds,
+                    message=(
+                        f"Round 1 complete: tasks={tasks_completed} "
+                        f"citations={memo_round1.unique_citations} domains={memo_round1.unique_domains} "
+                        f"extracts={memo_round1.pages_extracted} gaps={len(memo_round1.gaps)}"
+                    ),
+                )
+            )
         rounds.append(
             {
                 "round_index": 1,
@@ -802,6 +815,19 @@ class DeepResearchWorkflow:
             tasks_remaining=max(0, max_tasks_total - tasks_completed),
             findings=findings,
         )
+        if self.emitter is not None and round2_tasks:
+            self.emitter.emit(
+                ProgressEvent(
+                    stage="round",
+                    current=2,
+                    total=max_rounds,
+                    message=(
+                        f"Round 2 complete: tasks={tasks_completed} "
+                        f"citations={memo_after_round2.unique_citations} domains={memo_after_round2.unique_domains} "
+                        f"extracts={memo_after_round2.pages_extracted} gaps={len(memo_after_round2.gaps)}"
+                    ),
+                )
+            )
         if round2_tasks:
             rounds.append(
                 {
@@ -852,6 +878,19 @@ class DeepResearchWorkflow:
                     tasks_remaining=max(0, max_tasks_total - tasks_completed),
                     findings=findings,
                 )
+                if self.emitter is not None:
+                    self.emitter.emit(
+                        ProgressEvent(
+                            stage="round",
+                            current=3,
+                            total=max_rounds,
+                            message=(
+                                f"Round 3 complete: tasks={tasks_completed} "
+                                f"citations={memo_after_round3.unique_citations} domains={memo_after_round3.unique_domains} "
+                                f"extracts={memo_after_round3.pages_extracted} gaps={len(memo_after_round3.gaps)}"
+                            ),
+                        )
+                    )
                 rounds.append(
                     {
                         "round_index": 3,
@@ -1012,7 +1051,14 @@ class DeepResearchWorkflow:
             ) from e
 
         if self.emitter is not None:
-            self.emitter.emit(ProgressEvent(stage="done", current=1, total=1, message="Done"))
+            stop_reason = "max_rounds"
+            if tasks_completed >= max_tasks_total:
+                stop_reason = "task_budget_exhausted"
+            elif max_rounds >= 3 and verify_tasks_round3 and not verify_tasks:
+                stop_reason = "verification_skipped"
+            self.emitter.emit(
+                ProgressEvent(stage="done", current=1, total=1, message=f"Done (stop_reason={stop_reason})")
+            )
 
         combined_plan = plan
         if round2_tasks:
