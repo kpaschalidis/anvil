@@ -680,10 +680,36 @@ def _cmd_research(args) -> int:
 
         report_urls: set[str] = set()
         report_payload = getattr(outcome, "report_json", None)
+        report_count_label = "findings"
+        report_count = report_findings
         if isinstance(report_payload, dict):
-            fs = report_payload.get("findings")
-            if isinstance(fs, list):
-                for it in fs:
+            items = report_payload.get("items")
+            findings = report_payload.get("findings")
+            if isinstance(items, list):
+                report_count_label = "items"
+                report_count = len(items)
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    u = it.get("website_url")
+                    if isinstance(u, str) and u.startswith("http"):
+                        report_urls.add(u)
+                    proof = it.get("proof_links")
+                    if isinstance(proof, list):
+                        for u2 in proof:
+                            if isinstance(u2, str) and u2.startswith("http"):
+                                report_urls.add(u2)
+                    ev = it.get("evidence")
+                    if isinstance(ev, list):
+                        for e in ev:
+                            if isinstance(e, dict):
+                                u3 = e.get("url")
+                                if isinstance(u3, str) and u3.startswith("http"):
+                                    report_urls.add(u3)
+            elif isinstance(findings, list):
+                report_count_label = "findings"
+                report_count = len(findings)
+                for it in findings:
                     if not isinstance(it, dict):
                         continue
                     cites = it.get("citations")
@@ -708,13 +734,8 @@ def _cmd_research(args) -> int:
             if len(report_domains) < report_min_domains:
                 parts.append("below domain target")
             reason = f" ({', '.join(parts)})" if parts else ""
-        findings_count = report_findings
-        if isinstance(report_payload, dict):
-            fs = report_payload.get("findings")
-            if isinstance(fs, list):
-                findings_count = len(fs)
         print(
-            f"[diagnostics] report: findings={findings_count} unique_citations={len(report_urls)} domains={len(report_domains)} quality={quality}{reason}",
+            f"[diagnostics] report: {report_count_label}={report_count} unique_citations={len(report_urls)} domains={len(report_domains)} quality={quality}{reason}",
             file=sys.stderr,
         )
 
