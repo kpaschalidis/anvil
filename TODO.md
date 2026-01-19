@@ -36,3 +36,21 @@
 - [x] Quick profile: report quality diagnostics line (good/limited)
 - [x] Deep profile: show extracts/evidence in per-worker logs
 - [x] Deep profile: enforce `max_web_extract_calls` across continuations (per-task total)
+
+## Iterative Loop (In Progress)
+- [ ] Detect `report_type` (`narrative` vs `catalog`) before planning
+- [ ] Implement round memo schema + bounded serialization (<=~2k tokens)
+- [ ] Implement structured gap detection:
+  - [ ] Narrative gaps (coverage/diversity/topic)
+  - [ ] Catalog gaps (missing fields per candidate)
+- [ ] Replace fixed phases with 3-round loop:
+  - [ ] Round 1 discovery
+  - [ ] Round 2 gap-fill driven by memo gaps
+  - [ ] Round 3 verification-only (2 tasks)
+- [ ] Update planner prompts to be gap-aware per `report_type`
+- [ ] Add catalog worker output contract (`candidates[]` JSON) + parsing
+- [ ] Add catalog synthesis schema + validation (required fields + grounding)
+- [ ] Persist round artifacts under `research/rounds/`
+- [ ] Add worker retry policy (1 retry on transient failures)
+- [ ] Update logs for round headers + stop reason
+- [ ] Add tests for report type detection, memo bounding, gap detection, and 3-round loop artifacts
