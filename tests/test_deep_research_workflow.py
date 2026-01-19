@@ -1317,3 +1317,97 @@ def test_deep_research_workflow_min_domains_enforced(monkeypatch):
 
     with pytest.raises(RuntimeError):
         wf.run("query")
+
+
+def test_catalog_synthesis_payload_validation_accepts_grounded_items():
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(model="gpt-4o"),
+        emitter=None,
+    )
+
+    allowed = {"https://example.com/provider", "https://example.com/case"}
+    evidence = [
+        {
+            "url": "https://example.com/provider",
+            "title": "Provider",
+            "excerpt": "Pricing starts at $500/month and includes onboarding.",
+        },
+        {
+            "url": "https://example.com/case",
+            "title": "Case Study",
+            "excerpt": "Case study: improved conversion by 25% within 30 days.",
+        },
+    ]
+    payload = {
+        "title": "Catalog",
+        "summary_bullets": ["a"],
+        "items": [
+            {
+                "name": "Acme AI CRO",
+                "provider": "Acme",
+                "website_url": "https://example.com/provider",
+                "problem_solved": "Improve conversion rates for ecommerce stores.",
+                "who_its_for": "Shopify stores doing $50k+/mo.",
+                "how_ai_is_used": "AI analyzes funnels and generates experiments.",
+                "pricing_model": "$500/mo retainer",
+                "why_evergreen": "Conversion is a permanent lever.",
+                "replicable_with": "LLMs + analytics + Zapier/Make",
+                "proof_links": ["https://example.com/case"],
+                "evidence": [
+                    {"url": "https://example.com/provider", "quote": "Pricing starts at $500/month"},
+                ],
+            }
+        ],
+        "open_questions": [],
+    }
+
+    wf._validate_catalog_payload(  # noqa: SLF001
+        payload=payload,
+        allowed_urls=allowed,
+        required_fields={"name", "website_url", "problem_solved", "pricing_model", "proof_links"},
+        evidence=evidence,
+        target_items=1,
+    )
+
+
+def test_catalog_synthesis_payload_validation_rejects_unsupported_urls():
+    wf = DeepResearchWorkflow(
+        subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
+        parallel_runner=FakeParallelRunner(),  # type: ignore[arg-type]
+        config=DeepResearchConfig(model="gpt-4o"),
+        emitter=None,
+    )
+
+    allowed = {"https://example.com/provider"}
+    evidence = [{"url": "https://example.com/provider", "title": "Provider", "excerpt": "hello world"}]
+    payload = {
+        "title": "Catalog",
+        "summary_bullets": [],
+        "items": [
+            {
+                "name": "X",
+                "provider": "X",
+                "website_url": "https://evil.com",
+                "problem_solved": "p",
+                "who_its_for": "w",
+                "how_ai_is_used": "h",
+                "pricing_model": "price",
+                "why_evergreen": "e",
+                "replicable_with": "r",
+                "proof_links": ["https://example.com/provider"],
+                "evidence": [{"url": "https://example.com/provider", "quote": "hello"}],
+            }
+        ],
+        "open_questions": [],
+    }
+
+    with pytest.raises(Exception):
+        wf._validate_catalog_payload(  # noqa: SLF001
+            payload=payload,
+            allowed_urls=allowed,
+            required_fields={"name", "website_url", "problem_solved", "pricing_model", "proof_links"},
+            evidence=evidence,
+            target_items=1,
+        )

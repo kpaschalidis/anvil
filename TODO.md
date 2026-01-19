@@ -53,4 +53,4 @@
 - [x] Persist round artifacts under `research/rounds/`
 - [x] Add worker retry policy (1 retry on transient failures)
 - [ ] Update logs for round headers + stop reason
-- [ ] Add tests for catalog + round artifacts
+- [x] Add tests for catalog + round artifacts
