@@ -12,12 +12,17 @@ from anvil.subagents.parallel import ParallelWorkerRunner, WorkerTask
 from anvil.subagents.task_tool import SubagentRunner
 from anvil.subagents.parallel import WorkerResult
 from anvil.workflows.iterative_loop import (
+    CatalogCandidate,
+    CatalogMemo,
     ClaimToVerify,
+    FieldStatus,
     Gap,
     ReportType,
     ResearchMemo,
     SourceEntry,
     detect_report_type,
+    detect_required_fields,
+    detect_target_items,
     memo_to_planner_context,
 )
 
@@ -139,7 +144,13 @@ class DeepResearchOutcome:
     curated_sources: list[dict[str, Any]] | None = None
 
 
-def _planning_prompt(query: str, *, max_tasks: int) -> str:
+def _planning_prompt(query: str, *, max_tasks: int, report_type: ReportType = ReportType.NARRATIVE) -> str:
+    catalog_rules = ""
+    if report_type == ReportType.CATALOG:
+        catalog_rules = """
+- This is a CATALOG request: tasks must discover concrete providers/services and capture pricing + proof links (case studies/testimonials) with URLs.
+- Prefer tasks that map to distinct categories so we can find >= 2x candidates for selection.
+""".rstrip()
     return f"""You are a research orchestrator.
 
 Goal: propose a set of web searches to answer the user query.
@@ -162,6 +173,7 @@ Rules:
 - Provide 3 to {max_tasks} tasks.
 - Prefer diverse angles (definitions, market map, pros/cons, recent changes, technical details).
 - Each task must be answerable via web search results (URLs).
+{catalog_rules}
 """
 
 
@@ -652,7 +664,12 @@ class DeepResearchWorkflow:
             self.emitter.emit(ProgressEvent(stage="plan", current=0, total=None, message="Planning searches"))
 
         r1_max = min(max_tasks_per_round, _remaining_for_round(1, 0))
-        plan, planner_raw, planner_error = self._plan(query, max_tasks=r1_max, min_tasks=min(3, r1_max))
+        plan, planner_raw, planner_error = self._plan(
+            query,
+            max_tasks=r1_max,
+            min_tasks=min(3, r1_max),
+            report_type=report_type,
+        )
 
         if self.emitter is not None:
             tasks = plan.get("tasks") if isinstance(plan, dict) else None
@@ -999,20 +1016,192 @@ class DeepResearchWorkflow:
             if len(sources_summary) >= 20:
                 break
 
+        base_kwargs = {
+            "query": query,
+            "report_type": report_type,
+            "round_index": int(round_index),
+            "tasks_completed": int(tasks_completed),
+            "tasks_remaining": int(tasks_remaining),
+            "unique_citations": len(urls),
+            "unique_domains": len({d for d in domains if d}),
+            "pages_extracted": int(pages_extracted),
+            "themes_covered": (),
+            "sources_summary": tuple(sources_summary),
+        }
+
+        if report_type == ReportType.CATALOG:
+            target_items = detect_target_items(query) or 5
+            required_fields_raw = detect_required_fields(query)
+            required_fields = self._normalize_catalog_required_fields(required_fields_raw)
+            candidates = self._extract_catalog_candidates(findings, required_fields=required_fields)
+            gaps = self._catalog_gaps(candidates=candidates, target_items=target_items)
+            return CatalogMemo(
+                **base_kwargs,
+                gaps=tuple(gaps),
+                claims_to_verify=(),
+                target_items=int(target_items),
+                candidates=tuple(candidates),
+                required_fields=tuple(required_fields),
+            )
+
         return ResearchMemo(
-            query=query,
-            report_type=report_type,
-            round_index=int(round_index),
-            tasks_completed=int(tasks_completed),
-            tasks_remaining=int(tasks_remaining),
-            unique_citations=len(urls),
-            unique_domains=len({d for d in domains if d}),
-            pages_extracted=int(pages_extracted),
-            themes_covered=(),
-            sources_summary=tuple(sources_summary),
+            **base_kwargs,
             gaps=(),
             claims_to_verify=(),
         )
+
+    def _normalize_catalog_required_fields(self, raw_fields: list[str]) -> tuple[str, ...]:
+        """
+        Normalize user-provided field labels into canonical catalog keys.
+
+        Canonical keys are the ones the worker contract returns (and the synthesizer expects).
+        """
+        canonical: list[str] = []
+
+        def add(key: str) -> None:
+            if key not in canonical:
+                canonical.append(key)
+
+        for f in raw_fields or []:
+            s = str(f).strip().lower()
+            if not s:
+                continue
+            if "url" in s or ("website" in s and "provider" in s):
+                add("website_url")
+            elif "pricing" in s or "price" in s or "retainer" in s or "contract" in s:
+                add("pricing_model")
+            elif "case" in s or "testimonial" in s or "proof" in s:
+                add("proof_links")
+            elif "problem" in s:
+                add("problem_solved")
+            elif "for whom" in s or "who" in s or "customer" in s:
+                add("who_its_for")
+            elif "automation" in s or "ai" in s:
+                add("how_ai_is_used")
+            elif "evergreen" in s:
+                add("why_evergreen")
+            elif "replic" in s or "tools" in s:
+                add("replicable_with")
+            elif "name" in s or "provider" in s or "company" in s:
+                add("name")
+
+        # Always require the essentials for a usable catalog.
+        add("name")
+        add("website_url")
+        add("problem_solved")
+        add("pricing_model")
+        add("proof_links")
+        return tuple(canonical[:30])
+
+    def _extract_catalog_candidates(
+        self,
+        findings: list[dict[str, Any]],
+        *,
+        required_fields: tuple[str, ...],
+    ) -> list[CatalogCandidate]:
+        """
+        Parse worker outputs for catalog-style runs.
+
+        Workers are expected to return JSON with a top-level `candidates` array.
+        """
+        out: list[CatalogCandidate] = []
+        seen: set[str] = set()
+
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            raw = str(f.get("output") or "").strip()
+            if not raw:
+                continue
+            try:
+                payload = self._parse_planner_json(raw)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            items = payload.get("candidates")
+            if not isinstance(items, list):
+                continue
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                name = str(it.get("name") or it.get("provider") or it.get("company") or "").strip()
+                if not name:
+                    continue
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                provider_url = str(it.get("website_url") or it.get("provider_url") or it.get("url") or "").strip() or None
+
+                fields: dict[str, FieldStatus] = {}
+                for rf in required_fields:
+                    v = it.get(rf)
+                    if rf == "website_url":
+                        v = provider_url
+                    if rf == "proof_links":
+                        v = it.get("proof_links")
+                    if rf == "pricing_model":
+                        v = it.get("pricing_model")
+
+                    if isinstance(v, str):
+                        fields[rf] = FieldStatus.FOUND if v.strip() else FieldStatus.MISSING
+                    elif isinstance(v, list):
+                        fields[rf] = (
+                            FieldStatus.FOUND if any(isinstance(x, str) and x.strip() for x in v) else FieldStatus.MISSING
+                        )
+                    else:
+                        fields[rf] = FieldStatus.MISSING
+
+                out.append(
+                    CatalogCandidate(
+                        name=name,
+                        provider_url=provider_url,
+                        fields=fields,
+                        evidence_urls=(),
+                    )
+                )
+
+        return out
+
+    def _catalog_gaps(self, *, candidates: list[CatalogCandidate], target_items: int) -> list[Gap]:
+        gaps: list[Gap] = []
+        want = max(1, int(target_items)) * 2
+        if len(candidates) < want:
+            gaps.append(
+                Gap(
+                    gap_type="missing_candidates",
+                    description=f"Need more candidates: have {len(candidates)}, want {want}",
+                    priority=1,
+                    suggested_query="AI service provider pricing case study",
+                )
+            )
+
+        for c in candidates:
+            missing = [k for k, v in (c.fields or {}).items() if v == FieldStatus.MISSING]
+            if not missing:
+                continue
+            priority = 1 if any("pricing" in m for m in missing) else 2
+            suggested = None
+            if any("pricing" in m for m in missing):
+                suggested = f"\"{c.name}\" pricing cost plans"
+            elif any("proof" in m or "case" in m for m in missing):
+                suggested = f"\"{c.name}\" case study customer testimonial"
+            else:
+                suggested = f"\"{c.name}\" {' '.join(missing)}"
+            gaps.append(
+                Gap(
+                    gap_type="missing_field",
+                    description=f"{c.name}: missing {', '.join(missing)}",
+                    priority=priority,
+                    candidate_name=c.name,
+                    missing_fields=tuple(missing),
+                    suggested_query=suggested,
+                )
+            )
+
+        gaps.sort(key=lambda g: int(getattr(g, "priority", 2) or 2))
+        return gaps[:10]
 
     def _findings_from_results(self, results: list[WorkerResult]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -1106,10 +1295,26 @@ class DeepResearchWorkflow:
             by_id[r.task_id] = r
         return [by_id.get(t.id, by_id.get(t.id) or WorkerResult(task_id=t.id, success=False)) for t in tasks]
 
-    def _plan(self, query: str, *, max_tasks: int, min_tasks: int) -> tuple[dict[str, Any], str, str | None]:
+    def _plan(
+        self,
+        query: str,
+        *,
+        max_tasks: int,
+        min_tasks: int,
+        report_type: ReportType = ReportType.NARRATIVE,
+    ) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
             model=self.config.model,
-            messages=[{"role": "user", "content": _planning_prompt(query, max_tasks=max(1, int(max_tasks)))}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": _planning_prompt(
+                        query,
+                        max_tasks=max(1, int(max_tasks)),
+                        report_type=report_type,
+                    ),
+                }
+            ],
             temperature=0.2,
             max_tokens=800,
         )
@@ -1509,6 +1714,7 @@ class DeepResearchWorkflow:
         return {"tasks": validated_tasks[:10]}
 
     def _to_worker_tasks(self, query: str, plan: dict[str, Any]) -> list[WorkerTask]:
+        report_type = detect_report_type(query)
         tasks = plan.get("tasks") if isinstance(plan, dict) else None
         if not isinstance(tasks, list) or not tasks:
             if not self.config.best_effort:
@@ -1538,17 +1744,46 @@ class DeepResearchWorkflow:
                     f"- Use `max_chars={max(1, int(self.config.extract_max_chars))}`.\n"
                     "- Prefer diverse, reputable domains and avoid duplicates.\n"
                 )
-            prompt = (
-                "Use the `web_search` tool to gather sources and extract key facts.\n"
-                f"Aim for ~{max(1, int(self.config.target_web_search_calls))} `web_search` calls.\n"
-                f"Use pagination (page=1..{max(1, int(self.config.max_pages))}) and page_size={max(1, int(self.config.page_size))}.\n"
-                f"Aim for 2+ distinct query variants (refine queries as you learn).\n"
-                f"{read_block}"
-                "Stop searching once you have enough evidence and then write a concise note.\n\n"
-                f"Search query: {search_query}\n\n"
-                f"Instructions: {instructions}\n\n"
-                "Return a short Markdown note with bullet points and cite URLs.\n"
-            )
+            if report_type == ReportType.CATALOG:
+                prompt = (
+                    "You are collecting candidates for a structured catalog.\n"
+                    "Use the `web_search` tool to find provider sites, pricing pages, and case studies.\n"
+                    f"Aim for ~{max(1, int(self.config.target_web_search_calls))} `web_search` calls.\n"
+                    f"Use pagination (page=1..{max(1, int(self.config.max_pages))}) and page_size={max(1, int(self.config.page_size))}.\n"
+                    f"{read_block}"
+                    "Stop searching once you have enough evidence.\n\n"
+                    f"Search query: {search_query}\n\n"
+                    f"Instructions: {instructions}\n\n"
+                    "Return ONLY valid JSON (no markdown, no code fences) in this exact shape:\n"
+                    "{\n"
+                    '  "candidates": [\n'
+                    "    {\n"
+                    '      "name": "string",\n'
+                    '      "provider": "string",\n'
+                    '      "website_url": "https://...",\n'
+                    '      "problem_solved": "string",\n'
+                    '      "who_its_for": "string",\n'
+                    '      "how_ai_is_used": "string",\n'
+                    '      "pricing_model": "string",\n'
+                    '      "why_evergreen": "string",\n'
+                    '      "replicable_with": "string",\n'
+                    '      "proof_links": ["https://..."]\n'
+                    "    }\n"
+                    "  ]\n"
+                    "}\n"
+                )
+            else:
+                prompt = (
+                    "Use the `web_search` tool to gather sources and extract key facts.\n"
+                    f"Aim for ~{max(1, int(self.config.target_web_search_calls))} `web_search` calls.\n"
+                    f"Use pagination (page=1..{max(1, int(self.config.max_pages))}) and page_size={max(1, int(self.config.page_size))}.\n"
+                    f"Aim for 2+ distinct query variants (refine queries as you learn).\n"
+                    f"{read_block}"
+                    "Stop searching once you have enough evidence and then write a concise note.\n\n"
+                    f"Search query: {search_query}\n\n"
+                    f"Instructions: {instructions}\n\n"
+                    "Return a short Markdown note with bullet points and cite URLs.\n"
+                )
             worker_tasks.append(
                 WorkerTask(
                     id=task_id,
