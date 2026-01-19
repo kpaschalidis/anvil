@@ -1200,7 +1200,7 @@ def test_deep_research_workflow_deep_profile_round2(monkeypatch):
                     "summary_bullets": ["a"],
                     "findings": [
                         {"claim": "c1", "citations": ["https://example.com/a"]},
-                        {"claim": "c2", "citations": ["https://example.com/r2_extra"]},
+                        {"claim": "c2", "citations": ["https://example.com/extra"]},
                     ],
                     "open_questions": [],
                 }
@@ -1243,7 +1243,7 @@ def test_deep_research_workflow_deep_profile_round2(monkeypatch):
 
     outcome = wf.run("query")
     assert len(outcome.tasks) == 4
-    assert any(t.id == "r2_extra" for t in outcome.tasks)
+    assert any(t.id == "extra" for t in outcome.tasks)
 
 
 def test_deep_research_workflow_min_domains_enforced(monkeypatch):

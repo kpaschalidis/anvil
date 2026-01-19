@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-"""
-Public deep-research module.
+"""Public deep-research module."""
 
-The implementation lives in `anvil.workflows.deep_research_workflow` to keep this module small
-and make the workflow easier to maintain.
-"""
-
-from anvil.workflows.deep_research_workflow import (  # noqa: F401
+from anvil.workflows.deep_research_v3 import DeepResearchWorkflow  # noqa: F401
+from anvil.workflows.deep_research_workflow import _select_diverse_findings  # noqa: F401
+from anvil.workflows.deep_research_types import (  # noqa: F401
     DeepResearchConfig,
     DeepResearchOutcome,
     DeepResearchRunError,
-    DeepResearchWorkflow,
     PlanningError,
     SynthesisError,
-    _select_diverse_findings,
     sanitize_snippet,
 )
 

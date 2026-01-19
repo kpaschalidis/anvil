@@ -71,6 +71,8 @@ class DeepResearchConfig:
     worker_max_iterations: int = 6
     worker_timeout_s: float = 120.0
     max_rounds: int = 3
+    # v3 loop controls (when 0, fall back to max_rounds).
+    max_iterations: int = 0
     max_tasks_total: int = 12
     max_tasks_per_round: int = 6
     verify_tasks_round3: int = 2
@@ -98,6 +100,8 @@ class DeepResearchConfig:
     curated_sources_max_total: int = 0
     curated_sources_max_per_domain: int = 0
     curated_sources_min_per_task: int = 0
+    # v3: stop when a full iteration adds too little novelty.
+    saturation_threshold: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,4 +127,3 @@ class DeepResearchOutcome:
     synthesis_error: str | None = None
     synthesis_input: dict[str, Any] | None = None
     curated_sources: list[dict[str, Any]] | None = None
-

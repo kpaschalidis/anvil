@@ -18,6 +18,79 @@ from anvil.workflows.iterative_loop import ReportType, ResearchMemo, detect_repo
 
 
 class DeepResearchPlanningMixin:
+    def _plan_continuation(
+        self,
+        *,
+        query: str,
+        draft: str,
+        seen_queries: set[str],
+        max_tasks: int,
+    ) -> tuple[dict[str, Any], str, str | None]:
+        """Plan follow-up tasks based on the current draft (draft is the state)."""
+        seen_list = sorted({q.strip().lower() for q in seen_queries if isinstance(q, str) and q.strip()})[:20]
+
+        prompt = f"""You are a research orchestrator planning follow-up web searches.
+
+Original query:
+{query}
+
+Current research draft (includes a "## Still Missing" section):
+{(draft or "").strip()[:6000]}
+
+Already searched (DO NOT repeat these or very similar queries):
+{json.dumps(seen_list, ensure_ascii=False)}
+
+Return ONLY valid JSON in this exact shape:
+{{
+  "tasks": [
+    {{
+      "id": "short_id",
+      "search_query": "web search query (must differ from already searched)",
+      "instructions": "what to look for and what to return"
+    }}
+  ]
+}}
+
+Rules:
+- Provide 0 to {max(0, int(max_tasks))} tasks.
+- Tasks MUST address explicit gaps from the "## Still Missing" section.
+- Do NOT repeat or rephrase queries from "Already searched".
+- Return ONLY raw JSON (no markdown, no code fences).
+"""
+
+        resp = llm.completion(
+            model=self.config.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=800,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        if not content:
+            raise PlanningError("Continuation planner returned an empty response.", raw=content)
+        try:
+            plan = parse_json_with_retry(content, model=self.config.model)
+        except Exception as e:
+            raise PlanningError(f"Continuation planner returned invalid JSON: {e}", raw=content) from e
+
+        validated = self._validate_plan(plan, min_tasks=0)
+
+        def _norm(s: str) -> str:
+            return " ".join((s or "").strip().lower().split())
+
+        filtered: list[dict[str, Any]] = []
+        seen_norm = {_norm(q) for q in seen_queries if isinstance(q, str)}
+        for t in validated.get("tasks") or []:
+            if not isinstance(t, dict):
+                continue
+            q = t.get("search_query")
+            if not isinstance(q, str) or not q.strip():
+                continue
+            if _norm(q) in seen_norm:
+                continue
+            filtered.append(t)
+
+        return {"tasks": filtered[: max(0, int(max_tasks))]}, content, None
+
     def _plan(
         self,
         query: str,
