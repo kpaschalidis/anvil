@@ -5,7 +5,7 @@ Scout no longer has a CLI. The Scout package is used as a fetch-only module (sou
 ## Setup
 
 ```bash
-uv sync --extra scout
+uv sync --extra fetch
 ```
 
 Add any needed keys to `.env` (see `.env.example`). For example, Reddit requires `REDDIT_CLIENT_ID/SECRET/USER_AGENT`.
@@ -37,4 +37,3 @@ uv run anvil sessions list --kind fetch
 uv run anvil sessions show <session_id>
 uv run anvil sessions dir <session_id>
 ```
-

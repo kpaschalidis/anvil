@@ -176,12 +176,12 @@ dev = [
     { name = "flake8" },
     { name = "pytest" },
 ]
-gui = [
-    { name = "gradio" },
-]
-scout = [
+fetch = [
     { name = "playwright" },
     { name = "praw" },
+]
+gui = [
+    { name = "gradio" },
 ]
 search = [
     { name = "tavily-python" },
@@ -193,15 +193,15 @@ requires-dist = [
     { name = "gradio", marker = "extra == 'gui'", specifier = ">=4.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "litellm", specifier = ">=1.0" },
-    { name = "playwright", marker = "extra == 'scout'", specifier = ">=1.41" },
-    { name = "praw", marker = "extra == 'scout'", specifier = ">=7.0" },
+    { name = "playwright", marker = "extra == 'fetch'", specifier = ">=1.41" },
+    { name = "praw", marker = "extra == 'fetch'", specifier = ">=7.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "tavily-python", marker = "extra == 'search'", specifier = ">=0.3.5" },
 ]
-provides-extras = ["dev", "scout", "gui", "search"]
+provides-extras = ["dev", "fetch", "gui", "search"]
 
 [[package]]
 name = "anyio"

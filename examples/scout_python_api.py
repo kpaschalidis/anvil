@@ -4,7 +4,7 @@ from __future__ import annotations
 Fetch-only Python API example (Scout sources via FetchService).
 
 Requires:
-  uv sync --extra scout
+  uv sync --extra fetch
 """
 
 from scout.config import ScoutConfig
@@ -29,4 +29,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

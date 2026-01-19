@@ -75,7 +75,7 @@ uv run anvil repl src/anvil/cli.py
 uv run anvil repl -m "Add error handling to the main function"
 
 # Fetch raw documents (Scout sources; fetch-only)
-uv sync --extra scout
+uv sync --extra fetch
 uv run anvil fetch "AI note taking" --source producthunt --max-documents 50
 
 # Resume fetch (uses `data/sessions/<id>/state.json`)

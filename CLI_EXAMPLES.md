@@ -11,7 +11,7 @@ uv run anvil repl -m "Explain this repository's architecture"
 ## Fetch (Scout sources)
 
 ```bash
-uv sync --extra scout
+uv sync --extra fetch
 uv run anvil fetch "CRM pain points" --source hackernews --source reddit --max-documents 50
 uv run anvil fetch --resume <session_id>
 ```
@@ -32,4 +32,3 @@ uv run anvil sessions list
 uv run anvil sessions list --kind research
 uv run anvil sessions open <session_id>
 ```
-

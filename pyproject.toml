@@ -17,7 +17,7 @@ dev = [
     "pytest>=8.0",
     "flake8>=7.0",
 ]
-scout = [
+fetch = [
     "praw>=7.0",
     "playwright>=1.41",
 ]

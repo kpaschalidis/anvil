@@ -14,7 +14,6 @@ See `.env.example` for the full list. Common ones:
 ## Extras
 
 - `uv sync --extra dev`: tests/lint
-- `uv sync --extra scout`: fetch sources (Reddit/PRAW, ProductHunt/Playwright)
+- `uv sync --extra fetch`: fetch sources (Reddit/PRAW, ProductHunt/Playwright)
 - `uv sync --extra search`: deep research web search (Tavily)
 - `uv sync --extra gui`: Gradio UI
-
