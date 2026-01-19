@@ -5,6 +5,7 @@ from pathlib import Path
 
 from anvil.subagents.parallel import WorkerResult
 from anvil.workflows.deep_research import DeepResearchOutcome, DeepResearchWorkflow
+from anvil.workflows.iterative_loop import detect_report_type
 
 
 def _load_json(path: Path) -> dict:
@@ -104,7 +105,12 @@ def resume_deep_research(
         }
         for r in results
     ]
-    report, report_json = workflow._synthesize_and_render(query, findings, citations)  # noqa: SLF001
+    report, report_json = workflow._synthesize_and_render(  # noqa: SLF001
+        query,
+        findings,
+        citations,
+        report_type=detect_report_type(query),
+    )
 
     return DeepResearchOutcome(
         query=query,

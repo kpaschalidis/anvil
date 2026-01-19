@@ -497,6 +497,56 @@ Rules:
 """
 
 
+def _catalog_prompt(
+    query: str,
+    *,
+    target_items: int,
+    required_fields: list[str],
+    evidence: list[dict[str, Any]],
+) -> str:
+    fields_str = ", ".join(required_fields) if required_fields else ""
+    return f"""You are a research writer producing a structured catalog of service business models.
+
+User query:
+{query}
+
+Evidence (JSON). You MUST only use URLs from this list, and every quote MUST be copied from the excerpt exactly:
+{json.dumps(evidence, ensure_ascii=False)}
+
+Return ONLY valid JSON (no markdown, no code fences), in this exact shape:
+{{
+  "title": "string",
+  "summary_bullets": ["string"],
+  "items": [
+    {{
+      "name": "string",
+      "provider": "string",
+      "website_url": "https://...",
+      "problem_solved": "string",
+      "who_its_for": "string",
+      "how_ai_is_used": "string",
+      "pricing_model": "string",
+      "why_evergreen": "string",
+      "replicable_with": "string",
+      "proof_links": ["https://..."],
+      "evidence": [
+        {{"url": "https://...", "quote": "copied excerpt"}}
+      ]
+    }}
+  ],
+  "open_questions": ["string"]
+}}
+
+Rules:
+- Produce exactly {target_items} items.
+- Fill all required fields: {fields_str}.
+- Every URL you output (website_url, proof_links, evidence.url) MUST appear in the Evidence list.
+- Every item must include 1-2 evidence entries, and evidence.quote MUST be a substring copied from that URL's excerpt.
+- Prefer diverse providers and avoid duplicates.
+- Keep all field values concise (single paragraph max).
+"""
+
+
 def _select_diverse_findings(
     candidates: list[dict[str, Any]],
     *,
@@ -835,7 +885,12 @@ class DeepResearchWorkflow:
         )
 
         try:
-            report, report_json = self._synthesize_and_render(query, synthesis_findings, synthesis_allowed_urls)
+            report, report_json = self._synthesize_and_render(
+                query,
+                synthesis_findings,
+                synthesis_allowed_urls,
+                report_type=report_type,
+            )
         except SynthesisError as e:
             combined_plan = plan
             if round2_tasks:
@@ -1809,7 +1864,13 @@ class DeepResearchWorkflow:
         query: str,
         findings: list[dict[str, Any]],
         citations: list[str],
+        *,
+        report_type: ReportType = ReportType.NARRATIVE,
     ) -> tuple[str, dict[str, Any] | None]:
+        if report_type == ReportType.CATALOG:
+            md, payload = self._catalog_synthesize_and_render(query, findings=findings, citations=citations)
+            return md, payload
+
         if self.config.require_quote_per_claim and self.config.multi_pass_synthesis and not self.config.best_effort:
             md, payload = self._multi_pass_synthesize_and_render(query, findings, citations)
             return md, payload
@@ -1864,6 +1925,344 @@ class DeepResearchWorkflow:
 
         md = self._render_from_payload(query=query, findings=findings, citations=citations, payload=(payload or {}))
         return md, payload
+
+    def _catalog_synthesize_and_render(
+        self,
+        query: str,
+        *,
+        findings: list[dict[str, Any]],
+        citations: list[str],
+    ) -> tuple[str, dict[str, Any]]:
+        allowed = set(citations)
+        target_items = detect_target_items(query) or 5
+        required_fields = list(self._normalize_catalog_required_fields(detect_required_fields(query)))
+
+        evidence = self._build_catalog_evidence_pack(
+            findings=findings,
+            allowed_urls=allowed,
+            max_total=60,
+            max_per_domain=3,
+        )
+        if self.config.require_quote_per_claim and not evidence and not self.config.best_effort:
+            raise SynthesisError(
+                "Catalog synthesis requires extracted evidence but none was available",
+                raw="",
+                stage="synthesize",
+            )
+
+        resp = llm.completion(
+            model=self.config.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": _catalog_prompt(
+                        query,
+                        target_items=int(target_items),
+                        required_fields=required_fields,
+                        evidence=evidence,
+                    ),
+                }
+            ],
+            temperature=0.2,
+            max_tokens=2200,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        try:
+            payload = self._parse_planner_json(raw)
+        except Exception as e:
+            raise SynthesisError(f"Catalog synthesis returned invalid JSON: {e}", raw=raw, stage="synthesize") from e
+        if not isinstance(payload, dict):
+            raise SynthesisError("Catalog synthesis did not return a JSON object", raw=raw, stage="synthesize")
+
+        self._validate_catalog_payload(
+            payload=payload,
+            allowed_urls=allowed,
+            required_fields=set(required_fields),
+            evidence=evidence,
+            target_items=int(target_items),
+        )
+
+        md = self._render_catalog_payload(
+            payload=payload,
+            citations=citations,
+            evidence=evidence,
+        )
+        return md, payload
+
+    def _build_catalog_evidence_pack(
+        self,
+        *,
+        findings: list[dict[str, Any]],
+        allowed_urls: set[str],
+        max_total: int,
+        max_per_domain: int,
+    ) -> list[dict[str, Any]]:
+        max_total = max(0, int(max_total))
+        if max_total <= 0:
+            return []
+        max_per_domain = max(1, int(max_per_domain))
+
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        per_domain: dict[str, int] = {}
+
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            ev = f.get("evidence")
+            if not isinstance(ev, list):
+                continue
+            for item in ev:
+                if not isinstance(item, dict):
+                    continue
+                url = item.get("url")
+                excerpt = item.get("excerpt")
+                if not (isinstance(url, str) and url in allowed_urls and isinstance(excerpt, str) and excerpt.strip()):
+                    continue
+                if url in seen:
+                    continue
+                domain = urlparse(url).netloc.lower().strip()
+                if not domain:
+                    continue
+                if per_domain.get(domain, 0) >= max_per_domain:
+                    continue
+                title = item.get("title")
+                ex = excerpt.strip()
+                if len(ex) > 900:
+                    ex = ex[:900].rstrip() + "…"
+                out.append(
+                    {
+                        "url": url,
+                        "title": title if isinstance(title, str) else "",
+                        "excerpt": ex,
+                    }
+                )
+                seen.add(url)
+                per_domain[domain] = per_domain.get(domain, 0) + 1
+                if len(out) >= max_total:
+                    return out
+        return out
+
+    def _validate_catalog_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        allowed_urls: set[str],
+        required_fields: set[str],
+        evidence: list[dict[str, Any]],
+        target_items: int,
+    ) -> None:
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise SynthesisError(
+                "Catalog synthesis output missing `items` list",
+                raw=json.dumps(payload, ensure_ascii=False),
+                stage="synthesize",
+            )
+        if len(items) != int(target_items):
+            raise SynthesisError(
+                f"Catalog synthesis produced wrong number of items: {len(items)} != {int(target_items)}",
+                raw=json.dumps(payload, ensure_ascii=False),
+                stage="synthesize",
+            )
+
+        evidence_map = {
+            str(it.get("url")): str(it.get("excerpt") or "")
+            for it in evidence
+            if isinstance(it, dict) and isinstance(it.get("url"), str)
+        }
+
+        def _norm(s: str) -> str:
+            return " ".join((s or "").split())
+
+        def _quote_ok(url: str, quote: str) -> bool:
+            q = _norm(quote)
+            if not q:
+                return False
+            ex = _norm(evidence_map.get(url, ""))
+            return q in ex
+
+        for it in items:
+            if not isinstance(it, dict):
+                raise SynthesisError(
+                    "Catalog item is not a JSON object",
+                    raw=json.dumps(payload, ensure_ascii=False),
+                    stage="synthesize",
+                )
+            for k in required_fields:
+                v = it.get(k)
+                if k == "proof_links":
+                    if not (isinstance(v, list) and any(isinstance(x, str) and x.strip() for x in v)):
+                        raise SynthesisError(
+                            f"Catalog item missing required field: {k}",
+                            raw=json.dumps(payload, ensure_ascii=False),
+                            stage="synthesize",
+                        )
+                else:
+                    if not (isinstance(v, str) and v.strip()):
+                        raise SynthesisError(
+                            f"Catalog item missing required field: {k}",
+                            raw=json.dumps(payload, ensure_ascii=False),
+                            stage="synthesize",
+                        )
+
+            website_url = it.get("website_url")
+            if not (isinstance(website_url, str) and website_url in allowed_urls):
+                raise SynthesisError(
+                    "Catalog item has unsupported website_url",
+                    raw=json.dumps(payload, ensure_ascii=False),
+                    stage="synthesize",
+                )
+
+            proof_links = it.get("proof_links") or []
+            if not isinstance(proof_links, list) or not all(isinstance(x, str) for x in proof_links):
+                raise SynthesisError(
+                    "Catalog item proof_links must be a list of strings",
+                    raw=json.dumps(payload, ensure_ascii=False),
+                    stage="synthesize",
+                )
+            for u in proof_links:
+                if u not in allowed_urls:
+                    raise SynthesisError(
+                        "Catalog item has unsupported proof_links URL",
+                        raw=json.dumps(payload, ensure_ascii=False),
+                        stage="synthesize",
+                    )
+
+            ev = it.get("evidence")
+            if not isinstance(ev, list) or not ev:
+                raise SynthesisError(
+                    "Catalog item missing evidence quotes",
+                    raw=json.dumps(payload, ensure_ascii=False),
+                    stage="synthesize",
+                )
+            ok_any = False
+            for e in ev:
+                if not isinstance(e, dict):
+                    continue
+                url = e.get("url")
+                quote = e.get("quote")
+                if not (isinstance(url, str) and url in allowed_urls and isinstance(quote, str)):
+                    continue
+                if url not in evidence_map:
+                    continue
+                if not _quote_ok(url, quote):
+                    continue
+                ok_any = True
+            if not ok_any:
+                raise SynthesisError(
+                    "Catalog item evidence quotes did not match provided excerpts",
+                    raw=json.dumps(payload, ensure_ascii=False),
+                    stage="synthesize",
+                )
+
+    def _render_catalog_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        citations: list[str],
+        evidence: list[dict[str, Any]],
+    ) -> str:
+        title = str(payload.get("title") or "Catalog Report")
+        summary = payload.get("summary_bullets") or []
+        items = payload.get("items") or []
+        open_qs = payload.get("open_questions") or []
+
+        allowed = set(citations)
+        evidence_map = {
+            str(it.get("url")): it
+            for it in evidence
+            if isinstance(it, dict) and isinstance(it.get("url"), str)
+        }
+
+        citation_numbers: dict[str, int] = {}
+        ordered_urls: list[str] = []
+
+        def _num(url: str) -> int:
+            if url not in citation_numbers:
+                citation_numbers[url] = len(citation_numbers) + 1
+                ordered_urls.append(url)
+            return citation_numbers[url]
+
+        def _norm(s: str) -> str:
+            return " ".join((s or "").split())
+
+        lines: list[str] = [f"# {title}", ""]
+        if isinstance(summary, list) and summary:
+            lines.append("## Summary")
+            for b in summary[:12]:
+                if isinstance(b, str) and b.strip():
+                    lines.append(f"- {b.strip()}")
+            lines.append("")
+
+        if isinstance(items, list) and items:
+            lines.append("## Service Models")
+            for idx, it in enumerate(items, start=1):
+                if not isinstance(it, dict):
+                    continue
+                name = str(it.get("name") or "").strip() or f"Item {idx}"
+                provider = str(it.get("provider") or "").strip()
+                header = f"### {idx}. {name}" + (f" — {provider}" if provider else "")
+                lines.append(header)
+
+                website_url = it.get("website_url")
+                if isinstance(website_url, str) and website_url in allowed:
+                    n = _num(website_url)
+                    lines.append(f"- Website: [{n}]({website_url}) {website_url}")
+
+                def add_line(label: str, key: str) -> None:
+                    v = str(it.get(key) or "").strip()
+                    if v:
+                        lines.append(f"- {label}: {v}")
+
+                add_line("Problem", "problem_solved")
+                add_line("For", "who_its_for")
+                add_line("How AI is used", "how_ai_is_used")
+                add_line("Pricing", "pricing_model")
+                add_line("Evergreen", "why_evergreen")
+                add_line("Replicable with", "replicable_with")
+
+                proof_links = it.get("proof_links") or []
+                proof_links = [u for u in proof_links if isinstance(u, str) and u in allowed]
+                if proof_links:
+                    rendered = ", ".join(f"[{_num(u)}]({u})" for u in proof_links[:3])
+                    lines.append(f"- Proof: {rendered}")
+
+                ev = it.get("evidence") or []
+                if isinstance(ev, list) and ev:
+                    kept = []
+                    for e in ev:
+                        if not isinstance(e, dict):
+                            continue
+                        url = e.get("url")
+                        quote = e.get("quote")
+                        if isinstance(url, str) and url in allowed and isinstance(quote, str) and url in evidence_map:
+                            kept.append((url, quote))
+                        if len(kept) >= 2:
+                            break
+                    for url, quote in kept:
+                        n = _num(url)
+                        lines.append(f"- Quote: “{_norm(quote)}” [{n}]({url})")
+                lines.append("")
+
+        if isinstance(open_qs, list) and open_qs:
+            lines.append("## Open Questions")
+            for q in open_qs[:12]:
+                if isinstance(q, str) and q.strip():
+                    lines.append(f"- {q.strip()}")
+            lines.append("")
+
+        if ordered_urls:
+            lines.append("## Sources")
+            for u in ordered_urls:
+                n = citation_numbers[u]
+                meta = evidence_map.get(u) or {}
+                t = str(meta.get("title") or "").strip()
+                label = f"{t} — {u}" if t else u
+                lines.append(f"- [{n}]({u}) {label}")
+            lines.append("")
+
+        return "\n".join(lines).strip()
 
     def _repair_and_validate_synthesis_payload(
         self,

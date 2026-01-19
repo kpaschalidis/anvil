@@ -49,7 +49,7 @@
   - [x] Round 3 verification-only
 - [x] Update planner prompts to be gap-aware per `report_type`
 - [x] Add catalog worker output contract (`candidates[]` JSON) + parsing
-- [ ] Add catalog synthesis schema + validation (required fields + grounding)
+- [x] Add catalog synthesis schema + validation (required fields + grounding)
 - [ ] Persist round artifacts under `research/rounds/`
 - [x] Add worker retry policy (1 retry on transient failures)
 - [ ] Update logs for round headers + stop reason
