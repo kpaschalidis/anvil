@@ -1146,9 +1146,56 @@ class DeepResearchWorkflow:
                 required_fields=tuple(required_fields),
             )
 
+        gaps: list[Gap] = []
+        # Narrative gaps: deterministic coverage/evidence gaps only (no subjective tiering).
+        min_domains_target = max(
+            0,
+            int(self.config.min_total_domains),
+            int(self.config.report_min_unique_domains_target),
+        )
+        min_citations_target = max(
+            0,
+            int(self.config.min_total_citations),
+            int(self.config.report_min_unique_citations_target),
+        )
+
+        unique_domains = len({d for d in domains if d})
+        unique_citations = len(urls)
+
+        if min_domains_target and unique_domains < min_domains_target:
+            gaps.append(
+                Gap(
+                    gap_type="coverage_domains",
+                    description=f"Need more unique domains: {unique_domains} < {min_domains_target}",
+                    priority=1,
+                    suggested_query=f"{query} official docs specification reference",
+                )
+            )
+
+        if min_citations_target and unique_citations < min_citations_target:
+            gaps.append(
+                Gap(
+                    gap_type="coverage_citations",
+                    description=f"Need more unique citations: {unique_citations} < {min_citations_target}",
+                    priority=2,
+                    suggested_query=f"{query} overview guide examples",
+                )
+            )
+
+        if bool(self.config.enable_deep_read) and bool(self.config.require_quote_per_claim):
+            if int(pages_extracted) <= 0:
+                gaps.append(
+                    Gap(
+                        gap_type="missing_evidence",
+                        description="Need extracted page evidence (quotes) for grounded claims",
+                        priority=1,
+                        suggested_query=f"{query} documentation",
+                    )
+                )
+
         return ResearchMemo(
             **base_kwargs,
-            gaps=(),
+            gaps=tuple(gaps[:10]),
             claims_to_verify=(),
         )
 
