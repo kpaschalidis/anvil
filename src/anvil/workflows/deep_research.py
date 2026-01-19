@@ -312,6 +312,37 @@ Rules:
 """
 
 
+def _compact_findings_for_outline(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Reduce worker findings to a small, outline-friendly payload.
+
+    The outline stage only needs task IDs + a short gist; it does not need full excerpts,
+    full citation lists, or large markdown outputs (these can exceed context windows).
+    """
+    out: list[dict[str, Any]] = []
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        task_id = str(f.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        output = str(f.get("output") or "")
+        if len(output) > 800:
+            output = output[:800].rstrip() + "…"
+        urls = f.get("citations")
+        urls_list = [u for u in urls if isinstance(u, str) and u.startswith("http")] if isinstance(urls, list) else []
+        out.append(
+            {
+                "task_id": task_id,
+                "success": bool(f.get("success", True)),
+                "citations_count": len(urls_list),
+                "top_urls": urls_list[:6],
+                "note": output,
+            }
+        )
+    return out
+
+
 def _section_findings_prompt(query: str, *, section_title: str, evidence: list[dict[str, Any]]) -> str:
     return f"""You are a research writer for one section of a report.
 
@@ -807,6 +838,44 @@ class DeepResearchWorkflow:
                     synthesis_stage=e.stage,
                     synthesis_raw=e.raw,
                     synthesis_error=str(e),
+                    synthesis_input=synthesis_input,
+                    curated_sources=curated_sources,
+                ),
+            ) from e
+        except Exception as e:
+            # Ensure we persist partial artifacts (workers/plans) even for provider errors
+            # such as context window exceeded.
+            combined_plan = plan
+            if round2_tasks:
+                combined_plan = (
+                    {"tasks": (plan.get("tasks") or []) + (gap_plan.get("tasks") or [])} if gap_plan else plan
+                )
+            if verify_tasks and isinstance(combined_plan, dict):
+                combined_plan = {
+                    "tasks": (combined_plan.get("tasks") or []) + (verify_plan.get("tasks") or [])  # type: ignore[union-attr]
+                } if verify_plan else combined_plan
+            se = SynthesisError(str(e), stage="synthesize")
+            raise DeepResearchRunError(
+                str(se),
+                outcome=DeepResearchOutcome(
+                    query=query,
+                    plan=combined_plan,
+                    planner_raw=planner_raw,
+                    planner_error=planner_error,
+                    tasks=round1_tasks + round2_tasks + verify_tasks,
+                    results=results,
+                    citations=citations,
+                    report_markdown="",
+                    report_json=None,
+                    gap_plan=gap_plan,
+                    gap_planner_raw=gap_planner_raw,
+                    gap_planner_error=gap_planner_error,
+                    verify_plan=verify_plan,
+                    verify_planner_raw=verify_planner_raw,
+                    verify_planner_error=verify_planner_error,
+                    synthesis_stage=se.stage,
+                    synthesis_raw="",
+                    synthesis_error=str(se),
                     synthesis_input=synthesis_input,
                     curated_sources=curated_sources,
                 ),
@@ -1552,9 +1621,10 @@ class DeepResearchWorkflow:
         allowed_urls = set(citations)
 
         # 1) Outline
+        outline_findings = _compact_findings_for_outline(findings)
         outline_resp = llm.completion(
             model=self.config.model,
-            messages=[{"role": "user", "content": _outline_prompt(query, findings)}],
+            messages=[{"role": "user", "content": _outline_prompt(query, outline_findings)}],
             temperature=0.2,
             max_tokens=800,
         )
@@ -1585,11 +1655,15 @@ class DeepResearchWorkflow:
                 if not (isinstance(url, str) and url in allowed_urls and isinstance(excerpt, str) and excerpt.strip()):
                     continue
                 title = item.get("title")
+                ex = excerpt.strip()
+                # Keep excerpts bounded for prompt size; quotes are required to be short.
+                if len(ex) > 900:
+                    ex = ex[:900].rstrip() + "…"
                 cleaned.append(
                     {
                         "url": url,
                         "title": title if isinstance(title, str) else "",
-                        "excerpt": excerpt.strip(),
+                        "excerpt": ex,
                     }
                 )
             if cleaned:
@@ -1616,6 +1690,25 @@ class DeepResearchWorkflow:
                 evidence.extend(evidence_by_task.get(tid, []))
             if not evidence:
                 continue
+            # Bound evidence per section to avoid context blow-ups (especially with long user prompts).
+            # Keep diversity by preferring unique domains first.
+            seen_domains: set[str] = set()
+            bounded: list[dict[str, Any]] = []
+            for item in evidence:
+                if not isinstance(item, dict):
+                    continue
+                url = item.get("url")
+                if not isinstance(url, str) or not url.startswith("http"):
+                    continue
+                dom = urlparse(url).netloc.lower().strip()
+                if dom in seen_domains and len(bounded) >= 8:
+                    continue
+                bounded.append(item)
+                if dom:
+                    seen_domains.add(dom)
+                if len(bounded) >= 12:
+                    break
+            evidence = bounded
 
             sec_resp = llm.completion(
                 model=self.config.model,
