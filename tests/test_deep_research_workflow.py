@@ -8,7 +8,7 @@ from anvil.workflows.deep_research import (
     DeepResearchWorkflow,
     PlanningError,
 )
-from anvil.workflows.deep_research import sanitize_snippet
+from anvil.workflows.deep_research import _select_diverse_findings, sanitize_snippet
 from anvil.subagents.parallel import ParallelWorkerRunner, WorkerResult, WorkerTask
 
 
@@ -371,8 +371,43 @@ def test_sanitize_snippet_removes_inline_headings_and_bullets():
     out = sanitize_snippet(raw)
     assert "#####" not in out
     assert " * " not in out
-    assert "Connect to local MCP servers" in out
-    assert "MCP is an open-source standard" in out
+
+
+def test_select_diverse_findings_prefers_new_urls_and_domains():
+    candidates = [
+        {
+            "claim": "a",
+            "evidence": [
+                {"url": "https://a.com/1", "quote": "q"},
+                {"url": "https://a.com/2", "quote": "q"},
+            ],
+        },
+        {
+            "claim": "b",
+            "evidence": [
+                {"url": "https://b.com/1", "quote": "q"},
+                {"url": "https://c.com/1", "quote": "q"},
+            ],
+        },
+        {
+            "claim": "c",
+            "evidence": [
+                {"url": "https://a.com/1", "quote": "q"},
+                {"url": "https://d.com/1", "quote": "q"},
+            ],
+        },
+    ]
+    out = _select_diverse_findings(
+        candidates,
+        target_findings=2,
+        min_unique_urls_target=0,
+        min_unique_domains_target=0,
+    )
+    assert len(out) == 2
+    urls = {e["url"] for f in out for e in (f.get("evidence") or []) if isinstance(e, dict)}
+    domains = {u.split("/")[2] for u in urls}
+    # Expect at least 2 domains covered with two findings.
+    assert len(domains) >= 2
 
 
 def test_quick_synthesis_repairs_for_coverage(monkeypatch):

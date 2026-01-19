@@ -454,7 +454,7 @@ def _cmd_research(args) -> int:
             "extract_max_chars": 20000,
             "min_citations": 15,
             "min_domains": 6,
-            "report_min_citations": 15,
+            "report_min_citations": 20,
             "report_min_domains": 6,
             "report_findings": 8,
             "coverage_mode": "error",
@@ -706,8 +706,13 @@ def _cmd_research(args) -> int:
             if len(report_domains) < report_min_domains:
                 parts.append("below domain target")
             reason = f" ({', '.join(parts)})" if parts else ""
+        findings_count = report_findings
+        if isinstance(report_payload, dict):
+            fs = report_payload.get("findings")
+            if isinstance(fs, list):
+                findings_count = len(fs)
         print(
-            f"[diagnostics] report: findings={report_findings} unique_citations={len(report_urls)} domains={len(report_domains)} quality={quality}{reason}",
+            f"[diagnostics] report: findings={findings_count} unique_citations={len(report_urls)} domains={len(report_domains)} quality={quality}{reason}",
             file=sys.stderr,
         )
 
