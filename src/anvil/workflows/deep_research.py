@@ -85,7 +85,11 @@ class DeepResearchConfig:
     max_workers: int = 5
     worker_max_iterations: int = 6
     worker_timeout_s: float = 120.0
-    max_tasks: int = 5
+    max_rounds: int = 3
+    max_tasks_total: int = 12
+    max_tasks_per_round: int = 6
+    verify_tasks_round3: int = 2
+    worker_max_attempts: int = 2
     page_size: int = 8
     max_pages: int = 3
     target_web_search_calls: int = 2
@@ -98,9 +102,6 @@ class DeepResearchConfig:
     extract_max_chars: int = 20_000
     require_quote_per_claim: bool = False
     multi_pass_synthesis: bool = False
-    enable_round2: bool = False
-    round2_max_tasks: int = 3
-    verify_max_tasks: int = 0
     require_citations: bool = True
     min_total_citations: int = 3
     strict_all: bool = True
@@ -623,10 +624,36 @@ class DeepResearchWorkflow:
 
         report_type = detect_report_type(query)
 
+        max_rounds = max(1, int(self.config.max_rounds))
+        max_tasks_total = max(1, int(self.config.max_tasks_total))
+        max_tasks_per_round = max(1, int(self.config.max_tasks_per_round))
+        verify_tasks_round3 = max(0, int(self.config.verify_tasks_round3))
+
+        # Give catalog reports more headroom by default.
+        if report_type == ReportType.CATALOG:
+            max_tasks_total = max(max_tasks_total, 15)
+
+        def _remaining_for_round(round_index: int, tasks_completed: int) -> int:
+            remaining_total = max(0, max_tasks_total - tasks_completed)
+            if round_index >= max_rounds:
+                return remaining_total
+            reserve_verify = verify_tasks_round3 if max_rounds >= 3 and round_index < 3 else 0
+            return max(0, remaining_total - reserve_verify)
+
+        planner_raw = ""
+        planner_error: str | None = None
+        gap_planner_raw = ""
+        gap_planner_error: str | None = None
+        verify_planner_raw = ""
+        verify_planner_error: str | None = None
+
+        # Round 1: discovery
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="plan", current=0, total=None, message="Planning searches"))
 
-        plan, planner_raw, planner_error = self._plan(query, max_tasks=self.config.max_tasks, min_tasks=3)
+        r1_max = min(max_tasks_per_round, _remaining_for_round(1, 0))
+        plan, planner_raw, planner_error = self._plan(query, max_tasks=r1_max, min_tasks=min(3, r1_max))
+
         if self.emitter is not None:
             tasks = plan.get("tasks") if isinstance(plan, dict) else None
             if isinstance(tasks, list):
@@ -643,39 +670,89 @@ class DeepResearchWorkflow:
                     )
                 if summarized:
                     self.emitter.emit(ResearchPlanEvent(tasks=summarized))
-        round1_tasks = self._to_worker_tasks(query, plan)
 
-        if self.emitter is not None:
-            self.emitter.emit(
-                ProgressEvent(
-                    stage="workers",
-                    current=0,
-                    total=len(round1_tasks),
-                    message=f"Running {len(round1_tasks)} tasks (max concurrency: {self.config.max_workers})",
-                )
-            )
-
-        results = self.parallel_runner.spawn_parallel(
-            round1_tasks,
-            max_workers=self.config.max_workers,
-            timeout=self.config.worker_timeout_s,
-            allow_writes=False,
-            max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
-            max_web_extract_calls=(
-                max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
-            ),
-            extract_max_chars=int(self.config.extract_max_chars),
-            on_result=(self._emit_worker_completed if self.emitter is not None else None),
-        )
-
-        results = self._maybe_continue_workers(
-            round1_tasks,
-            results,
+        round1_tasks = self._to_worker_tasks(query, plan)[:r1_max]
+        results = self._run_round(
             stage_label="workers",
-            message_prefix="Continuing round-1 tasks",
+            message=f"Running {len(round1_tasks)} tasks (max concurrency: {self.config.max_workers})",
+            tasks=round1_tasks,
         )
 
-        results = self._apply_worker_invariants(results)
+        # Collect findings after round 1.
+        findings = self._findings_from_results(results)
+        tasks_completed = len(round1_tasks)
+
+        memo_round1 = self._build_round_memo(
+            query=query,
+            report_type=report_type,
+            round_index=1,
+            tasks_completed=len(findings),
+            tasks_remaining=max(0, max_tasks_total - tasks_completed),
+            findings=findings,
+        )
+
+        gap_plan: dict[str, Any] | None = None
+        round2_tasks: list[WorkerTask] = []
+
+        # Round 2: gap fill (planned from memo)
+        if max_rounds >= 2:
+            r2_budget = min(max_tasks_per_round, _remaining_for_round(2, tasks_completed))
+            if r2_budget > 0 and not self.config.best_effort:
+                if self.emitter is not None:
+                    self.emitter.emit(
+                        ProgressEvent(stage="gap", current=0, total=None, message="Planning follow-up searches")
+                    )
+                gap_plan, gap_planner_raw, gap_planner_error = self._gap_fill_plan(query, memo_round1, max_tasks=r2_budget)
+                round2_tasks = self._to_worker_tasks(query, gap_plan)[:r2_budget] if gap_plan else []
+                if round2_tasks:
+                    more = self._run_round(
+                        stage_label="workers",
+                        message=f"Running {len(round2_tasks)} gap-fill tasks (max concurrency: {self.config.max_workers})",
+                        tasks=round2_tasks,
+                    )
+                    results = list(results) + list(more)
+                    findings = self._findings_from_results(results)
+                    tasks_completed += len(round2_tasks)
+
+        memo_after_round2 = self._build_round_memo(
+            query=query,
+            report_type=report_type,
+            round_index=2 if round2_tasks else 1,
+            tasks_completed=len(findings),
+            tasks_remaining=max(0, max_tasks_total - tasks_completed),
+            findings=findings,
+        )
+
+        verify_plan: dict[str, Any] | None = None
+        verify_tasks: list[WorkerTask] = []
+
+        # Round 3: verification-only (always attempt up to verify_tasks_round3)
+        if max_rounds >= 3 and verify_tasks_round3 > 0 and not self.config.best_effort:
+            verify_budget = min(verify_tasks_round3, max(0, max_tasks_total - tasks_completed))
+            if verify_budget > 0:
+                if self.emitter is not None:
+                    self.emitter.emit(
+                        ProgressEvent(stage="verify", current=0, total=None, message="Planning verification searches")
+                    )
+                verify_plan, verify_planner_raw, verify_planner_error = self._verification_plan(
+                    query,
+                    memo_after_round2,
+                    max_tasks=verify_budget,
+                    min_tasks=min(1, verify_budget),
+                )
+                verify_tasks = self._to_worker_tasks(query, verify_plan)[:verify_budget] if verify_plan else []
+                if verify_tasks:
+                    more = self._run_round(
+                        stage_label="workers",
+                        message=f"Running {len(verify_tasks)} verification tasks (max concurrency: {self.config.max_workers})",
+                        tasks=verify_tasks,
+                    )
+                    results = list(results) + list(more)
+                    findings = self._findings_from_results(results)
+                    tasks_completed += len(verify_tasks)
+                else:
+                    raise PlanningError("Verification round produced no tasks", raw=verify_planner_raw)
+
         citations = (
             self._collect_evidence_urls(results)
             if self.config.enable_deep_read
@@ -703,176 +780,6 @@ class DeepResearchWorkflow:
                     f"Need >= {self.config.min_total_domains} domains, got {len(domains)}.\n\n"
                     f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
                 )
-
-        findings: list[dict[str, Any]] = []
-        for r in results:
-            findings.append(
-                {
-                    "task_id": r.task_id,
-                    "success": r.success,
-                    "output": r.output,
-                    "error": r.error,
-                    "citations": list(r.citations),
-                    "sources": getattr(r, "sources", {}) or {},
-                    "evidence": list(getattr(r, "evidence", ()) or ()),
-                    "web_search_calls": int(r.web_search_calls or 0),
-                    "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
-                }
-            )
-
-        memo_round1 = self._build_round_memo(
-            query=query,
-            report_type=report_type,
-            round_index=1,
-            tasks_completed=len(findings),
-            tasks_remaining=max(0, int(self.config.max_tasks) - len(findings)),
-            findings=findings,
-        )
-
-        gap_plan = None
-        gap_planner_raw = ""
-        gap_planner_error = None
-        round2_tasks: list[WorkerTask] = []
-        if self.config.enable_round2 and not self.config.best_effort:
-            if self.emitter is not None:
-                self.emitter.emit(
-                    ProgressEvent(stage="gap", current=0, total=None, message="Planning follow-up searches")
-                )
-            gap_plan, gap_planner_raw, gap_planner_error = self._gap_fill_plan(query, memo_round1)
-            round2_tasks = self._to_worker_tasks(query, gap_plan) if gap_plan else []
-            if round2_tasks:
-                if self.emitter is not None:
-                    self.emitter.emit(
-                        ProgressEvent(
-                            stage="workers",
-                            current=0,
-                            total=len(round2_tasks),
-                            message=f"Running {len(round2_tasks)} follow-up tasks (max concurrency: {self.config.max_workers})",
-                        )
-                    )
-                more = self.parallel_runner.spawn_parallel(
-                    round2_tasks,
-                    max_workers=self.config.max_workers,
-                    timeout=self.config.worker_timeout_s,
-                    allow_writes=False,
-                    max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
-                    max_web_extract_calls=(
-                        max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
-                    ),
-                    extract_max_chars=int(self.config.extract_max_chars),
-                    on_result=(self._emit_worker_completed if self.emitter is not None else None),
-                )
-                more = self._maybe_continue_workers(
-                    round2_tasks,
-                    more,
-                    stage_label="workers",
-                    message_prefix="Continuing round-2 tasks",
-                )
-                more = self._apply_worker_invariants(more)
-                results = list(results) + list(more)
-                citations = (
-                    self._collect_evidence_urls(results)
-                    if self.config.enable_deep_read
-                    else self._collect_citations_from_traces(results)
-                )
-                failures = [r for r in results if not r.success]
-                if self.config.strict_all and failures:
-                    raise RuntimeError(
-                        "Deep research failed because one or more workers failed.\n\n"
-                        f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
-                    )
-                findings = []
-                for r in results:
-                    findings.append(
-                        {
-                            "task_id": r.task_id,
-                            "success": r.success,
-                            "output": r.output,
-                            "error": r.error,
-                            "citations": list(r.citations),
-                            "sources": getattr(r, "sources", {}) or {},
-                            "evidence": list(getattr(r, "evidence", ()) or ()),
-                            "web_search_calls": int(r.web_search_calls or 0),
-                            "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
-                        }
-                    )
-
-        memo_after_round2 = self._build_round_memo(
-            query=query,
-            report_type=report_type,
-            round_index=2 if round2_tasks else 1,
-            tasks_completed=len(findings),
-            tasks_remaining=0,
-            findings=findings,
-        )
-
-        verify_plan = None
-        verify_planner_raw = ""
-        verify_planner_error = None
-        verify_tasks: list[WorkerTask] = []
-        if int(self.config.verify_max_tasks) > 0 and not self.config.best_effort:
-            if self.emitter is not None:
-                self.emitter.emit(
-                    ProgressEvent(stage="verify", current=0, total=None, message="Planning verification searches")
-                )
-            verify_plan, verify_planner_raw, verify_planner_error = self._verification_plan(query, memo_after_round2)
-            verify_tasks = self._to_worker_tasks(query, verify_plan) if verify_plan else []
-            if verify_tasks:
-                if self.emitter is not None:
-                    self.emitter.emit(
-                        ProgressEvent(
-                            stage="workers",
-                            current=0,
-                            total=len(verify_tasks),
-                            message=f"Running {len(verify_tasks)} verification tasks (max concurrency: {self.config.max_workers})",
-                        )
-                    )
-                    more = self.parallel_runner.spawn_parallel(
-                        verify_tasks,
-                    max_workers=self.config.max_workers,
-                    timeout=self.config.worker_timeout_s,
-                    allow_writes=False,
-                    max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
-                    max_web_extract_calls=(
-                        max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0
-                    ),
-                        extract_max_chars=int(self.config.extract_max_chars),
-                        on_result=(self._emit_worker_completed if self.emitter is not None else None),
-                    )
-                more = self._maybe_continue_workers(
-                    verify_tasks,
-                    more,
-                    stage_label="workers",
-                    message_prefix="Continuing verification tasks",
-                )
-                more = self._apply_worker_invariants(more)
-                results = list(results) + list(more)
-                citations = (
-                    self._collect_evidence_urls(results)
-                    if self.config.enable_deep_read
-                    else self._collect_citations_from_traces(results)
-                )
-                failures = [r for r in results if not r.success]
-                if self.config.strict_all and failures:
-                    raise RuntimeError(
-                        "Deep research failed because one or more workers failed.\n\n"
-                        f"Diagnostics:\n{self._format_worker_diagnostics(results)}"
-                    )
-                findings = []
-                for r in results:
-                    findings.append(
-                        {
-                            "task_id": r.task_id,
-                            "success": r.success,
-                            "output": r.output,
-                            "error": r.error,
-                            "citations": list(r.citations),
-                            "sources": getattr(r, "sources", {}) or {},
-                            "evidence": list(getattr(r, "evidence", ()) or ()),
-                            "web_search_calls": int(r.web_search_calls or 0),
-                            "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
-                        }
-                    )
 
         if self.emitter is not None:
             self.emitter.emit(ProgressEvent(stage="synthesize", current=0, total=None, message="Synthesizing report"))
@@ -1106,6 +1013,98 @@ class DeepResearchWorkflow:
             gaps=(),
             claims_to_verify=(),
         )
+
+    def _findings_from_results(self, results: list[WorkerResult]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for r in results:
+            out.append(
+                {
+                    "task_id": r.task_id,
+                    "success": r.success,
+                    "output": r.output,
+                    "error": r.error,
+                    "citations": list(r.citations),
+                    "sources": getattr(r, "sources", {}) or {},
+                    "evidence": list(getattr(r, "evidence", ()) or ()),
+                    "web_search_calls": int(r.web_search_calls or 0),
+                    "web_extract_calls": int(getattr(r, "web_extract_calls", 0) or 0),
+                }
+            )
+        return out
+
+    def _run_round(
+        self,
+        *,
+        stage_label: str,
+        message: str,
+        tasks: list[WorkerTask],
+    ) -> list[WorkerResult]:
+        if not tasks:
+            return []
+
+        if self.emitter is not None:
+            self.emitter.emit(ProgressEvent(stage=stage_label, current=0, total=len(tasks), message=message))
+
+        results = self.parallel_runner.spawn_parallel(
+            tasks,
+            max_workers=self.config.max_workers,
+            timeout=self.config.worker_timeout_s,
+            allow_writes=False,
+            max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
+            max_web_extract_calls=(max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0),
+            extract_max_chars=int(self.config.extract_max_chars),
+            on_result=(self._emit_worker_completed if self.emitter is not None else None),
+        )
+
+        results = self._maybe_continue_workers(
+            tasks,
+            results,
+            stage_label=stage_label,
+            message_prefix=f"Continuing {stage_label} tasks",
+        )
+        results = self._apply_worker_invariants(results)
+
+        if self.config.best_effort:
+            return results
+
+        max_attempts = max(1, int(self.config.worker_max_attempts))
+        if max_attempts <= 1:
+            return results
+
+        failed_ids = {r.task_id for r in results if not r.success}
+        if not failed_ids:
+            return results
+
+        if self.emitter is not None:
+            self.emitter.emit(
+                ProgressEvent(
+                    stage=stage_label,
+                    current=0,
+                    total=len(failed_ids),
+                    message=f"Retrying {len(failed_ids)} failed task(s)",
+                )
+            )
+
+        retry_tasks = [t for t in tasks if t.id in failed_ids]
+        if not retry_tasks:
+            return results
+
+        rerun = self.parallel_runner.spawn_parallel(
+            retry_tasks,
+            max_workers=self.config.max_workers,
+            timeout=self.config.worker_timeout_s,
+            allow_writes=False,
+            max_web_search_calls=max(1, int(self.config.max_web_search_calls)),
+            max_web_extract_calls=(max(0, int(self.config.max_web_extract_calls)) if self.config.enable_deep_read else 0),
+            extract_max_chars=int(self.config.extract_max_chars),
+            on_result=(self._emit_worker_completed if self.emitter is not None else None),
+        )
+        rerun = self._apply_worker_invariants(rerun)
+
+        by_id = {r.task_id: r for r in results}
+        for r in rerun:
+            by_id[r.task_id] = r
+        return [by_id.get(t.id, by_id.get(t.id) or WorkerResult(task_id=t.id, success=False)) for t in tasks]
 
     def _plan(self, query: str, *, max_tasks: int, min_tasks: int) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
@@ -1353,7 +1352,13 @@ class DeepResearchWorkflow:
             )
         )
 
-    def _gap_fill_plan(self, query: str, memo: ResearchMemo) -> tuple[dict[str, Any], str, str | None]:
+    def _gap_fill_plan(
+        self,
+        query: str,
+        memo: ResearchMemo,
+        *,
+        max_tasks: int,
+    ) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
             model=self.config.model,
             messages=[
@@ -1362,7 +1367,7 @@ class DeepResearchWorkflow:
                     "content": _gap_fill_prompt_from_memo(
                         query,
                         memo,
-                        max_tasks=max(0, int(self.config.round2_max_tasks)),
+                        max_tasks=max(0, int(max_tasks)),
                     ),
                 }
             ],
@@ -1383,9 +1388,16 @@ class DeepResearchWorkflow:
         for t in tasks:
             if isinstance(t, dict) and isinstance(t.get("id"), str) and not t["id"].startswith("r2_"):
                 t["id"] = f"r2_{t['id']}"
-        return {"tasks": tasks[: max(0, int(self.config.round2_max_tasks))]}, content, None
+        return {"tasks": tasks[: max(0, int(max_tasks))]}, content, None
 
-    def _verification_plan(self, query: str, memo: ResearchMemo) -> tuple[dict[str, Any], str, str | None]:
+    def _verification_plan(
+        self,
+        query: str,
+        memo: ResearchMemo,
+        *,
+        max_tasks: int,
+        min_tasks: int = 0,
+    ) -> tuple[dict[str, Any], str, str | None]:
         resp = llm.completion(
             model=self.config.model,
             messages=[
@@ -1394,7 +1406,7 @@ class DeepResearchWorkflow:
                     "content": _verification_prompt_from_memo(
                         query,
                         memo,
-                        max_tasks=max(0, int(self.config.verify_max_tasks)),
+                        max_tasks=max(0, int(max_tasks)),
                     ),
                 }
             ],
@@ -1408,12 +1420,12 @@ class DeepResearchWorkflow:
             plan = self._parse_planner_json(content)
         except Exception as e:
             raise PlanningError(f"Verification planner returned invalid JSON: {e}", raw=content) from e
-        validated = self._validate_plan(plan, min_tasks=0)
+        validated = self._validate_plan(plan, min_tasks=max(0, int(min_tasks)))
         tasks = validated.get("tasks") or []
         for t in tasks:
             if isinstance(t, dict) and isinstance(t.get("id"), str) and not t["id"].startswith("v_"):
                 t["id"] = f"v_{t['id']}"
-        return {"tasks": tasks[: max(0, int(self.config.verify_max_tasks))]}, content, None
+        return {"tasks": tasks[: max(0, int(max_tasks))]}, content, None
 
     def _parse_planner_json(self, content: str) -> Any:
         try:

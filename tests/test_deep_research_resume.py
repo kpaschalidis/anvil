@@ -96,7 +96,16 @@ def test_resume_deep_research_reruns_failed_workers(tmp_path, monkeypatch):
     wf = DeepResearchWorkflow(
         subagent_runner=FakeSubagentRunner(),  # type: ignore[arg-type]
         parallel_runner=pr,  # type: ignore[arg-type]
-        config=DeepResearchConfig(model="gpt-4o", max_workers=2, worker_max_iterations=2, worker_timeout_s=10.0),
+        config=DeepResearchConfig(
+            model="gpt-4o",
+            max_workers=2,
+            worker_max_iterations=2,
+            worker_timeout_s=10.0,
+            max_rounds=1,
+            max_tasks_total=2,
+            max_tasks_per_round=2,
+            verify_tasks_round3=0,
+        ),
         emitter=None,
     )
 
@@ -112,4 +121,3 @@ def test_resume_deep_research_reruns_failed_workers(tmp_path, monkeypatch):
     assert outcome.report_markdown.startswith("# REPORT")
     assert "https://example.com/a" in outcome.report_markdown
     assert "https://example.com/b" in outcome.report_markdown
-

@@ -87,7 +87,10 @@ def _build_parser() -> argparse.ArgumentParser:
     research.add_argument("--max-workers", type=int, default=None, help="Parallel worker concurrency")
     research.add_argument("--worker-iterations", type=int, default=None)
     research.add_argument("--worker-timeout", type=float, default=None)
-    research.add_argument("--max-tasks", type=int, default=None, help="Max planned tasks (round 1)")
+    research.add_argument("--max-rounds", type=int, default=None, help="Max research rounds (default depends on profile)")
+    research.add_argument("--max-tasks-total", type=int, default=None, help="Hard cap on total tasks across all rounds")
+    research.add_argument("--max-tasks-per-round", type=int, default=None, help="Max planned tasks per round")
+    research.add_argument("--verify-tasks-round3", type=int, default=None, help="Verification tasks in final round (deep)")
     research.add_argument("--page-size", type=int, default=None, help="Tavily page_size (1-20)")
     research.add_argument("--max-pages", type=int, default=None, help="Encourage pagination up to N pages")
     research.add_argument("--target-web-search-calls", type=int, default=None, help="Target web_search calls per worker (guidance only)")
@@ -96,8 +99,6 @@ def _build_parser() -> argparse.ArgumentParser:
     research.add_argument("--max-web-extract-calls", type=int, default=None, help="Max web_extract calls per worker (deep read)")
     research.add_argument("--extract-max-chars", type=int, default=None, help="Max chars returned per web_extract call")
     research.add_argument("--min-domains", type=int, default=None, help="Min unique domains across all citations")
-    research.add_argument("--round2-max-tasks", type=int, default=None, help="Max follow-up tasks in deep profile")
-    research.add_argument("--verify-max-tasks", type=int, default=None, help="Max verification tasks (deep profile)")
     research.add_argument("--min-citations", type=int, default=None)
     research.add_argument(
         "--curated-max-total",
@@ -444,8 +445,10 @@ def _cmd_research(args) -> int:
             "max_workers": 6,
             "worker_iterations": 12,
             "worker_timeout": 300.0,
-            "max_tasks": 8,
-            "round2_max_tasks": 4,
+            "max_rounds": 3,
+            "max_tasks_total": 12,
+            "max_tasks_per_round": 6,
+            "verify_tasks_round3": 2,
             "page_size": 10,
             "max_pages": 4,
             "target_web_search_calls": 4,
@@ -461,8 +464,6 @@ def _cmd_research(args) -> int:
             "curated_sources_max_total": 0,
             "curated_sources_max_per_domain": 0,
             "curated_sources_min_per_task": 0,
-            "enable_round2": True,
-            "verify_max_tasks": 2,
             "enable_worker_continuation": True,
             "max_worker_continuations": 2,
             "enable_deep_read": True,
@@ -474,8 +475,10 @@ def _cmd_research(args) -> int:
             "max_workers": 3,
             "worker_iterations": 6,
             "worker_timeout": 120.0,
-            "max_tasks": 5,
-            "round2_max_tasks": 0,
+            "max_rounds": 1,
+            "max_tasks_total": 5,
+            "max_tasks_per_round": 5,
+            "verify_tasks_round3": 0,
             "page_size": 6,
             "max_pages": 2,
             "target_web_search_calls": 2,
@@ -491,8 +494,6 @@ def _cmd_research(args) -> int:
             "curated_sources_max_total": 30,
             "curated_sources_max_per_domain": 2,
             "curated_sources_min_per_task": 3,
-            "enable_round2": False,
-            "verify_max_tasks": 0,
             "enable_worker_continuation": False,
             "max_worker_continuations": 0,
             "enable_deep_read": False,
@@ -503,9 +504,10 @@ def _cmd_research(args) -> int:
     max_workers = int(_p(args.max_workers, defaults["max_workers"]))
     worker_iterations = int(_p(args.worker_iterations, defaults["worker_iterations"]))
     worker_timeout = float(_p(args.worker_timeout, defaults["worker_timeout"]))
-    max_tasks = int(_p(args.max_tasks, defaults["max_tasks"]))
-    round2_max_tasks = int(_p(args.round2_max_tasks, defaults["round2_max_tasks"]))
-    verify_max_tasks = int(_p(args.verify_max_tasks, defaults["verify_max_tasks"]))
+    max_rounds = int(_p(args.max_rounds, defaults["max_rounds"]))
+    max_tasks_total = int(_p(args.max_tasks_total, defaults["max_tasks_total"]))
+    max_tasks_per_round = int(_p(args.max_tasks_per_round, defaults["max_tasks_per_round"]))
+    verify_tasks_round3 = int(_p(args.verify_tasks_round3, defaults["verify_tasks_round3"]))
     page_size = int(_p(args.page_size, defaults["page_size"]))
     max_pages = int(_p(args.max_pages, defaults["max_pages"]))
     target_web_search_calls = int(
@@ -539,7 +541,6 @@ def _cmd_research(args) -> int:
         coverage_mode = "warn"
     if bool(args.coverage_strict):
         coverage_mode = "error"
-    enable_round2 = bool(defaults["enable_round2"]) and round2_max_tasks > 0
     enable_worker_continuation = bool(defaults["enable_worker_continuation"])
     max_worker_continuations = int(defaults["max_worker_continuations"])
     enable_deep_read = bool(defaults["enable_deep_read"])
@@ -554,9 +555,11 @@ def _cmd_research(args) -> int:
             max_workers=max_workers,
             worker_max_iterations=worker_iterations,
             worker_timeout_s=worker_timeout,
-            max_tasks=max_tasks,
-            round2_max_tasks=round2_max_tasks,
-            verify_max_tasks=verify_max_tasks,
+            max_rounds=max_rounds,
+            max_tasks_total=max_tasks_total,
+            max_tasks_per_round=max_tasks_per_round,
+            verify_tasks_round3=verify_tasks_round3,
+            worker_max_attempts=int(max(1, int(args.max_attempts))),
             page_size=page_size,
             max_pages=max_pages,
             target_web_search_calls=target_web_search_calls,
@@ -569,7 +572,6 @@ def _cmd_research(args) -> int:
             min_total_domains=min_domains,
             enable_worker_continuation=enable_worker_continuation,
             max_worker_continuations=max_worker_continuations,
-            enable_round2=enable_round2,
             min_total_citations=max(0, min_citations),
             strict_all=True,
             best_effort=bool(args.best_effort),
@@ -613,7 +615,10 @@ def _cmd_research(args) -> int:
                 "max_workers": int(max_workers),
                 "worker_iterations": int(worker_iterations),
                 "worker_timeout": float(worker_timeout),
-                "max_tasks": max_tasks,
+                "max_rounds": int(max_rounds),
+                "max_tasks_total": int(max_tasks_total),
+                "max_tasks_per_round": int(max_tasks_per_round),
+                "verify_tasks_round3": int(verify_tasks_round3),
                 "page_size": page_size,
                 "max_pages": max_pages,
                 "target_web_search_calls": target_web_search_calls,
@@ -625,14 +630,11 @@ def _cmd_research(args) -> int:
                 "multi_pass_synthesis": bool(multi_pass_synthesis),
                 "enable_worker_continuation": bool(enable_worker_continuation),
                 "max_worker_continuations": int(max_worker_continuations),
-                "round2_max_tasks": round2_max_tasks,
-                "verify_max_tasks": verify_max_tasks,
                 "min_citations": min_citations,
                 "min_domains": min_domains,
-                "enable_round2": bool(enable_round2),
                 "best_effort": bool(args.best_effort),
                 "resume": bool(resume_id),
-                "max_attempts": int(args.max_attempts),
+                "worker_max_attempts": int(args.max_attempts),
                 "report_min_citations": int(report_min_citations),
                 "report_min_domains": int(report_min_domains),
                 "report_findings": int(report_findings),

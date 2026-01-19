@@ -252,6 +252,144 @@ Follow-up Suggestions
 - Higher hallucination rate in free tier
 - Concerns about robots.txt compliance
 
+### ThinkDepth.ai (#1 on RACE Benchmark)
+
+**Source**: https://github.com/thinkdepthai/Deep_Research
+
+**Core Innovation - Diffusion Algorithm**:
+
+ThinkDepth treats research like **image diffusion** - start with a "noisy" draft, iteratively "denoise" it by adding concrete information:
+
+```
+<Diffusion Algorithm>
+1. Generate next research questions to address gaps in draft report
+2. ConductResearch: retrieve external information (concrete delta for denoising)  
+3. refine_draft_report: remove "noise" (imprecision, incompleteness)
+4. CompleteResearch: only complete when ConductResearch finds no new findings
+</Diffusion Algorithm>
+```
+
+**Architecture**:
+```
+clarify_with_user
+    ↓
+write_research_brief
+    ↓
+write_draft_report (initial noisy draft)
+    ↓
+┌─────────────────────────────────────┐
+│  SUPERVISOR LOOP (iterative)        │
+│                                     │
+│  supervisor → supervisor_tools ─┐   │
+│       ▲                         │   │
+│       └─────────────────────────┘   │
+│                                     │
+│  Tools:                             │
+│  - ConductResearch (spawn workers)  │
+│  - refine_draft_report              │
+│  - ResearchComplete (exit)          │
+│  - think_tool (reflection)          │
+└─────────────────────────────────────┘
+    ↓
+final_report_generation
+```
+
+**Key differentiators**:
+- **Draft-centric iteration**: Maintains a draft report that gets refined each iteration (not just a memo)
+- **Dynamic stopping**: Loop continues until `ConductResearch` finds no new findings
+- **Parallel sub-agents**: Up to 3 concurrent researchers per iteration
+- **Diffusion framing**: Incompleteness is "noise" to be removed through research
+- **GPT-5 model**: Using the most capable model available
+
+**Configuration**:
+```python
+max_researcher_iterations = 15  # Max tool calls per researcher
+max_concurrent_researchers = 3  # Parallel sub-agents
+```
+
+**The Key Prompt Pattern**:
+```
+Your focus is to call "ConductResearch" to conduct research against the 
+overall research question and call "refine_draft_report" to refine the 
+draft report with new findings.
+
+You know the research findings are complete by running ConductResearch 
+to generate diverse research questions to see if you cannot find any 
+new findings.
+```
+
+**Why It's #1 on RACE**:
+
+| RACE Dimension | How ThinkDepth Excels |
+|----------------|----------------------|
+| Comprehensiveness | Dynamic stopping = research until saturated |
+| Insight/Depth | Multiple iterations refine analysis |
+| Instruction-Following | Research brief keeps focus |
+| Readability | Draft refined multiple times |
+
+**Limitations**:
+- Unpredictable runtime (dynamic stopping)
+- High cost (GPT-5 + many iterations)
+- Requires good "no new findings" detection
+
+---
+
+## Benchmarks: RACE & FACT
+
+### RACE (Report Quality)
+
+**RACE** = Reference-based Adaptive Criteria-driven Evaluation
+
+Evaluates final report quality across 4 dimensions with dynamic per-task weighting:
+1. **Comprehensiveness** - Coverage breadth and depth
+2. **Insight/Depth** - Quality of analysis
+3. **Instruction-Following** - Adherence to requirements
+4. **Readability** - Clarity and organization
+
+Validated with ~71% agreement with human expert judgment (better than inter-expert agreement at 68%).
+
+### FACT (Citation Quality)
+
+**FACT** = Framework for Factual Abundance & Citation Trustworthiness
+
+Evaluates evidence gathering and citation accuracy:
+- **Citation Accuracy**: Does the cited source actually support the claim?
+- **Effective Citations**: How many correctly-supported citations per task?
+
+**Key finding from FACT**:
+
+| System | Citation Accuracy | Effective Citations |
+|--------|-------------------|---------------------|
+| Perplexity Deep Research | **90.24%** (best) | Moderate |
+| Gemini 2.5 Pro | Medium-high | **~111/task** (most) |
+| OpenAI Deep Research | Decent | 40-80/task |
+
+**Trade-off**: High citation volume often comes at the cost of accuracy. Getting many sources is useful for breadth, but many are weak or loosely relevant.
+
+---
+
+## RACE Benchmark Leaderboard (Reference)
+
+The **RACE** (Reference-based Adaptive Criteria-driven Evaluation) benchmark evaluates deep research across 4 dimensions:
+1. **Comprehensiveness** - Coverage breadth and depth
+2. **Insight/Depth** - Quality of analysis
+3. **Instruction-Following** - Adherence to requirements
+4. **Readability** - Clarity and organization
+
+**Top performers (as of 2026)**:
+
+| Rank | System | RACE Score | Notes |
+|------|--------|-----------|-------|
+| 1 | ThinkDepth.ai | ~0.50 | Diffusion algorithm, GPT-5 |
+| 1 | Tavily Research | ~0.50+ | "Outstanding across all metrics" |
+| 2 | Felo Research | 0.4937 | Surpasses Gemini 2.5 Pro |
+| 3 | Gemini 2.5 Pro Deep Research | 0.4888-0.4892 | Top commercial |
+| 4 | Salesforce Enterprise | ~0.48+ | Enterprise-focused |
+| 5 | OpenAI Deep Research | 0.4698 | Using o3 model |
+| 6 | LangChain Open Deep Research | 0.4344 | Open source, GPT-4.1 |
+
+**Key insight**: LangChain (#6) is the highest-ranked fully open source framework, and with GPT-5 jumps to 0.4943 (top tier).
+
 ---
 
 ## The Ideal Deep Research Architecture
@@ -372,7 +510,34 @@ def research_loop(topic, max_iterations):
     return summary
 ```
 
-### Pattern 3: Schema-Driven Synthesis
+### Pattern 3: Diffusion-Based Draft Refinement (ThinkDepth)
+
+The #1 RACE approach - treat the draft as "noisy" and iteratively denoise:
+
+```python
+def diffusion_research(query, max_iterations):
+    brief = write_research_brief(query)
+    draft = write_initial_draft(brief)  # Noisy initial draft
+    
+    for i in range(max_iterations):
+        # Generate research questions targeting gaps
+        questions = identify_gaps(draft, brief)
+        
+        # Conduct parallel research
+        findings = parallel_research(questions, max_workers=3)
+        
+        if not findings.has_new_information:
+            break  # Saturation reached
+        
+        # Refine draft with new findings (denoising step)
+        draft = refine_draft(draft, findings)
+    
+    return finalize_report(draft)
+```
+
+**Key insight**: The draft is the central artifact, not a memo. Each iteration makes the draft more precise and complete.
+
+### Pattern 4: Schema-Driven Synthesis
 
 ```python
 CATALOG_SCHEMA = {
@@ -405,9 +570,23 @@ def synthesize_catalog(candidates, schema):
 | Search | Multiple queries | Adaptive queries based on what's found |
 | Reading | Snippets | Full page extraction with quotes |
 | Planning | Fixed task list | Dynamic tasks based on evidence gaps |
+| Stopping | Fixed round count | Dynamic saturation detection |
+| State | Memo/summary between rounds | Draft artifact refined iteratively |
 | Verification | Citation check | Independent source verification |
 | Output | Generic summary | Deliverable-specific structure |
 | Transparency | Source list | Confidence signals + methodology |
+
+### The ThinkDepth Insight
+
+The key difference between #1 RACE (ThinkDepth) and lower-ranked systems:
+
+| Approach | How it works | Trade-off |
+|----------|--------------|-----------|
+| **Fixed rounds** | 2-3 predetermined research phases | Predictable cost, may stop too early |
+| **Diffusion/Draft-centric** | Refine draft until no new findings | Better quality, unpredictable cost |
+| **Hybrid** | Fixed rounds + early-exit on saturation | Best of both |
+
+**Recommendation for cost-sensitive systems**: Use fixed rounds (3) but add early-exit when gap detection returns empty. This gives predictability while avoiding wasted rounds on simple queries.
 
 ---
 
@@ -415,6 +594,8 @@ def synthesize_catalog(candidates, schema):
 
 1. **OpenAI Deep Research announcement**: https://openai.com/index/introducing-deep-research/
 2. **Claude Research docs**: https://support.anthropic.com/en/articles/11088861-using-research-on-claude-ai
-3. **GPT-Researcher (open source)**: https://github.com/assafelovic/gpt-researcher
-4. **ReportBench (evaluation)**: https://arxiv.org/abs/2508.15804
-5. **DeepTRACE (audit framework)**: https://arxiv.org/abs/2509.04499
+3. **ThinkDepth Deep Research (#1 RACE)**: https://github.com/thinkdepthai/Deep_Research
+4. **GPT-Researcher (open source)**: https://github.com/assafelovic/gpt-researcher
+5. **DeepResearch-Bench (RACE/FACT benchmark)**: https://deepresearch-bench.github.io/
+6. **ReportBench (evaluation)**: https://arxiv.org/abs/2508.15804
+7. **DeepTRACE (audit framework)**: https://arxiv.org/abs/2509.04499
