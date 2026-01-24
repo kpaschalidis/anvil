@@ -37,31 +37,14 @@
 - [x] Deep profile: show extracts/evidence in per-worker logs
 - [x] Deep profile: enforce `max_web_extract_calls` across continuations (per-task total)
 
-## Iterative Loop (In Progress)
-- [x] Detect `report_type` (`narrative` vs `catalog`) before planning
-- [x] Implement round memo schema + bounded serialization (<=~2k tokens)
-- [ ] Implement structured gap detection:
-  - [x] Narrative gaps (coverage/evidence)
-  - [x] Catalog gaps (missing fields per candidate)
-- [x] Replace fixed phases with 3-round loop:
-  - [x] Round 1 discovery
-  - [x] Round 2 gap-fill driven by memo
-  - [x] Round 3 verification-only
-- [x] Update planner prompts to be gap-aware per `report_type`
-- [x] Add catalog worker output contract (`candidates[]` JSON) + parsing
-- [x] Add catalog synthesis schema + validation (required fields + grounding)
-- [x] Persist round artifacts under `research/rounds/`
-- [x] Add worker retry policy (1 retry on transient failures)
-- [x] Update logs for round headers + stop reason
-- [x] Add tests for catalog + round artifacts
-
-## Deep Research Simplification v3 (In Progress)
-- [ ] Phase 1: Add `deep_research_utils.py` (JSON retry + top-findings selection)
-- [ ] Phase 2: Remove complex catalog infra (keep detection + minimal shape validator)
-- [ ] Phase 3: Replace fixed rounds with draft-centric loop (track seen queries + 2-signal saturation)
-- [ ] Phase 4: Remove multi-pass synthesis (single-pass only)
-- [ ] Phase 5: Simplify validation (keep grounding, use JSON retry utility)
-- [ ] Phase 6: Remove worker continuation
-- [ ] Phase 7: Shrink files (keep split) + delete unused modules
-- [ ] Update tests for new loop behavior
-- [ ] Run full test suite + manual smoke run
+## Deep Research Simplification v3
+- [x] Phase 1: Add `deep_research_utils.py` (JSON retry + top-findings selection)
+- [x] Phase 2: Remove complex memo/catalog infra (keep detection + minimal shape validator)
+- [x] Phase 3: Replace fixed rounds with draft-centric loop (track seen queries + 2-signal saturation)
+- [x] Phase 4: Remove multi-pass synthesis (single-pass only)
+- [x] Phase 5: Simplify validation (grounding-only)
+- [x] Phase 6: Remove worker continuation
+- [x] Phase 7: Shrink files (keep split) + delete unused modules
+- [x] Update tests for new loop behavior
+- [x] Run full test suite
+- [ ] Manual smoke run (quick + deep)
