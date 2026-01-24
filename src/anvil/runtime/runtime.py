@@ -6,6 +6,15 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from common import llm
+from common.agent_loop import LoopConfig, run_loop
+from common.events import (
+    AssistantDeltaEvent,
+    AssistantMessageEvent,
+    AssistantResponseStartEvent,
+    EventEmitter,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from anvil.config import AgentConfig, resolve_model_alias
 from anvil.files import FileManager
 from anvil.history import MessageHistory
@@ -19,6 +28,8 @@ from anvil.subagents.registry import AgentRegistry
 from anvil.subagents.task_tool import SubagentRunner, TaskTool
 from anvil.modes.base import ModeConfig
 from anvil.runtime.hooks import RuntimeHooks
+from anvil.tools.extract import WEB_EXTRACT_TOOL_SCHEMA, web_extract
+from anvil.tools.search import WEB_SEARCH_TOOL_SCHEMA, web_search
 
 
 class AnvilRuntime:
@@ -179,6 +190,20 @@ class AnvilRuntime:
         )
 
         self.tools.register_tool(
+            name="web_search",
+            description="Search the web (Tavily)",
+            parameters=WEB_SEARCH_TOOL_SCHEMA,
+            implementation=self._tool_web_search,
+        )
+
+        self.tools.register_tool(
+            name="web_extract",
+            description="Extract raw page content (Tavily)",
+            parameters=WEB_EXTRACT_TOOL_SCHEMA,
+            implementation=self._tool_web_extract,
+        )
+
+        self.tools.register_tool(
             name="skill",
             description="Load a skill's instructions into context",
             parameters={
@@ -269,6 +294,31 @@ class AnvilRuntime:
             return f"Skill not found: {name}"
         return entry.body
 
+    def _tool_web_search(
+        self,
+        query: str,
+        page: int = 1,
+        page_size: int = 5,
+        max_results: int | None = None,
+        include_domains: list[str] | None = None,
+        exclude_domains: list[str] | None = None,
+        days: int | None = None,
+        include_raw_content: bool = False,
+    ) -> dict[str, Any]:
+        return web_search(
+            query=query,
+            page=page,
+            page_size=page_size,
+            max_results=max_results,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
+            days=days,
+            include_raw_content=include_raw_content,
+        )
+
+    def _tool_web_extract(self, url: str, max_chars: int = 20_000) -> dict[str, Any]:
+        return web_extract(url=url, max_chars=max_chars)
+
     def run_turn(self, message: str | None = None) -> None:
         if message:
             self.history.add_user_message(message)
@@ -308,101 +358,102 @@ class AnvilRuntime:
         self.history.add_user_message(message)
         self._send_to_llm_with_tools()
 
+    def run_prompt(
+        self,
+        prompt: str,
+        *,
+        files: list[str] | None = None,
+        max_iterations: int = 10,
+    ) -> str:
+        if files:
+            for filepath in files:
+                self.add_file_to_context(filepath)
+        self.history.add_user_message(prompt)
+        result = run_loop(
+            messages=self.history.messages,
+            tools=self.tools.get_tool_schemas(),
+            execute_tool=lambda name, args: self.tools.execute_tool(name, args),
+            config=LoopConfig(
+                model=resolve_model_alias(self.config.model),
+                system_prompt=self.history.system_prompt,
+                max_iterations=max_iterations,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                stream=False,
+                use_tools=self.config.use_tools,
+            ),
+            emitter=None,
+        )
+        self.hooks.fire_turn_end()
+        return result.final_response
+
     def _send_to_llm_with_tools(self):
         self._send_to_llm_with_tools_internal()
         self.hooks.fire_turn_end()
 
     def _send_to_llm_with_tools_internal(self):
-        messages = self.history.get_messages_for_api()
+        started_response = False
+
+        def on_event(event) -> None:
+            nonlocal started_response
+
+            if isinstance(event, AssistantResponseStartEvent):
+                started_response = False
+                return
+            if isinstance(event, AssistantDeltaEvent):
+                if not started_response:
+                    print("\n🤖 Assistant:", end=" ")
+                    started_response = True
+                print(event.text, end="", flush=True)
+                return
+            if isinstance(event, AssistantMessageEvent):
+                if self.config.stream and started_response:
+                    print()
+                if event.content:
+                    self.hooks.fire_assistant_message(event.content)
+                    self._autosave()
+                return
+            if isinstance(event, ToolCallEvent):
+                print(f"\n🔧 Calling: {event.tool_name}({json.dumps(event.args, indent=2)})")
+                return
+            if isinstance(event, ToolResultEvent):
+                if event.result.get("success"):
+                    print(f"✅ Result: {str(event.result.get('result', 'Success'))[:200]}")
+                else:
+                    print(f"❌ Error: {event.result.get('error')}")
+                self.hooks.fire_tool_result(event.tool_name, event.tool_call_id, event.result)
+                self._autosave()
+                return
 
         max_iterations = 10
-        iteration = 0
+        try:
+            run_loop(
+                messages=self.history.messages,
+                tools=self.tools.get_tool_schemas(),
+                execute_tool=lambda name, args: self.tools.execute_tool(name, args),
+                config=LoopConfig(
+                    model=resolve_model_alias(self.config.model),
+                    system_prompt=self.history.system_prompt,
+                    max_iterations=max_iterations,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    stream=self.config.stream,
+                    use_tools=self.config.use_tools,
+                ),
+                emitter=EventEmitter(on_event),
+            )
+        except Exception as e:
+            error_str = str(e).lower()
+            if "rate" in error_str and "limit" in error_str:
+                print("❌ Rate limit hit. Waiting...")
+                import time
 
-        while iteration < max_iterations:
-            iteration += 1
+                time.sleep(5)
+                return self._send_to_llm_with_tools_internal()
+            print(f"\n❌ Error calling LLM: {e}")
+            import traceback
 
-            try:
-                api_kwargs: Dict[str, Any] = {
-                    "model": resolve_model_alias(self.config.model),
-                    "messages": messages,
-                    "temperature": self.config.temperature,
-                    "max_tokens": self.config.max_tokens,
-                }
-
-                if self.config.use_tools:
-                    api_kwargs["tools"] = self.tools.get_tool_schemas()
-                    api_kwargs["tool_choice"] = "auto"
-
-                if self.config.stream:
-                    response = self._handle_streaming_with_tools(api_kwargs)
-                else:
-                    completion = llm.completion(**api_kwargs)
-                    response = completion.choices[0].message
-
-                if hasattr(response, "tool_calls") and response.tool_calls:
-                    tool_calls = response.tool_calls
-
-                    self.history.add_assistant_message(
-                        content=response.content,
-                        tool_calls=[
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in tool_calls
-                        ],
-                    )
-
-                    for tool_call in tool_calls:
-                        tool_name = tool_call.function.name
-                        tool_args = json.loads(tool_call.function.arguments)
-
-                        print(
-                            f"\n🔧 Calling: {tool_name}({json.dumps(tool_args, indent=2)})"
-                        )
-
-                        result = self.tools.execute_tool(tool_name, tool_args)
-                        result_str = json.dumps(result)
-
-                        if result.get("success"):
-                            print(f"✅ Result: {result.get('result', 'Success')[:200]}")
-                        else:
-                            print(f"❌ Error: {result.get('error')}")
-
-                        self.history.add_tool_result(
-                            tool_call_id=tool_call.id, name=tool_name, result=result_str
-                        )
-                        self.hooks.fire_tool_result(tool_name, tool_call.id, result)
-                        self._autosave()
-
-                    messages = self.history.get_messages_for_api()
-                    continue
-
-                if response.content:
-                    self.history.add_assistant_message(content=response.content)
-                    self.hooks.fire_assistant_message(response.content)
-                    self._autosave()
-
-                break
-
-            except Exception as e:
-                error_str = str(e).lower()
-                if "rate" in error_str and "limit" in error_str:
-                    print("❌ Rate limit hit. Waiting...")
-                    import time
-
-                    time.sleep(5)
-                    continue
-
-                print(f"\n❌ Error calling LLM: {e}")
-                import traceback
-
-                traceback.print_exc()
-                break
+            traceback.print_exc()
 
     def _handle_streaming_with_tools(self, api_kwargs: Dict) -> Any:
         api_kwargs["stream"] = True

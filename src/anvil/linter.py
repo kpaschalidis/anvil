@@ -59,6 +59,8 @@ class Linter:
             if result.returncode == 0:
                 return None
             errors = result.stdout + result.stderr
+            if "No module named flake8" in errors:
+                return None
             lines = self._extract_line_numbers(errors, filepath)
             return LintResult(text=errors, lines=lines)
         except (subprocess.TimeoutExpired, FileNotFoundError):

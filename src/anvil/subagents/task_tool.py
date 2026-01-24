@@ -1,11 +1,13 @@
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any, Dict
 
 from common.text_template import render_template
 from anvil.history import MessageHistory
 from anvil.subagents.registry import AgentRegistry, AgentDefinition
+from anvil.subagents.trace import SubagentTrace, ToolCallRecord
 
 
 class SubagentRunner:
@@ -49,10 +51,39 @@ class SubagentRunner:
         agent_name: str | None = None,
         model: str | None = None,
         max_iterations: int = 6,
+        *,
+        allowed_tool_names: set[str] | None = None,
+        max_web_search_calls: int | None = None,
+        max_web_extract_calls: int | None = None,
     ) -> str:
+        output, _trace = self.run_task_with_trace(
+            prompt=prompt,
+            agent_name=agent_name,
+            model=model,
+            max_iterations=max_iterations,
+            allowed_tool_names=allowed_tool_names,
+            max_web_search_calls=max_web_search_calls,
+            max_web_extract_calls=max_web_extract_calls,
+        )
+        return output
+
+    def run_task_with_trace(
+        self,
+        *,
+        prompt: str,
+        agent_name: str | None = None,
+        model: str | None = None,
+        max_iterations: int = 6,
+        allowed_tool_names: set[str] | None = None,
+        max_web_search_calls: int | None = None,
+        max_web_extract_calls: int | None = None,
+    ) -> tuple[str, SubagentTrace]:
         agent_def = None
         if agent_name:
             agent_def = self.agent_registry.agents.get(agent_name)
+
+        trace = SubagentTrace()
+        started = time.perf_counter()
 
         history = MessageHistory()
         history.set_system_prompt(self._build_system_prompt(agent_def))
@@ -60,13 +91,16 @@ class SubagentRunner:
 
         messages = history.get_messages_for_api()
         iterations = 0
+        tools = self.tool_registry.get_tool_schemas()
+        if allowed_tool_names is not None:
+            tools = [t for t in tools if t.get("function", {}).get("name") in allowed_tool_names]
 
         while iterations < max_iterations:
             iterations += 1
             response = self.completion_fn(
                 model=model or (agent_def.model if agent_def else None) or self.default_model,
                 messages=messages,
-                tools=self.tool_registry.get_tool_schemas(),
+                tools=tools,
                 tool_choice="auto",
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -93,7 +127,57 @@ class SubagentRunner:
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
-                    result = self.tool_registry.execute_tool(tool_name, tool_args)
+                    dt_ms: int | None = None
+                    executed = True
+                    if allowed_tool_names is not None and tool_name not in allowed_tool_names:
+                        result = {
+                            "success": False,
+                            "error": f"Tool not allowed in worker mode: {tool_name}",
+                        }
+                        executed = False
+                    elif (
+                        tool_name == "web_search"
+                        and max_web_search_calls is not None
+                        and trace.web_search_calls >= int(max_web_search_calls)
+                    ):
+                        result = {
+                            "success": False,
+                            "error": f"Max web_search calls reached ({max_web_search_calls})",
+                        }
+                        executed = False
+                    elif (
+                        tool_name == "web_extract"
+                        and max_web_extract_calls is not None
+                        and trace.web_extract_calls >= int(max_web_extract_calls)
+                    ):
+                        result = {
+                            "success": False,
+                            "error": f"Max web_extract calls reached ({max_web_extract_calls})",
+                        }
+                        executed = False
+                    else:
+                        t0 = time.perf_counter()
+                        result = self.tool_registry.execute_tool(tool_name, tool_args)
+                        dt_ms = int((time.perf_counter() - t0) * 1000)
+
+                    trace.tool_calls.append(
+                        ToolCallRecord(
+                            tool_name=tool_name,
+                            args=tool_args,
+                            result=result,
+                            duration_ms=dt_ms,
+                        )
+                    )
+                    if tool_name == "web_search" and executed:
+                        trace.web_search_calls += 1
+                        trace.citations.update(_extract_citations_from_web_search_result(result))
+                        trace.sources.update(_extract_source_metadata_from_web_search_result(result))
+                    if tool_name == "web_extract" and executed:
+                        trace.web_extract_calls += 1
+                        extracted = _extract_extracted_from_web_extract_result(result)
+                        if extracted and extracted.get("url"):
+                            trace.extracted[str(extracted["url"])] = extracted
+
                     history.add_tool_result(
                         tool_call_id=tool_call.id,
                         name=tool_name,
@@ -105,11 +189,17 @@ class SubagentRunner:
 
             if response_msg.content:
                 history.add_assistant_message(content=response_msg.content)
-                return response_msg.content
+                trace.iterations = iterations
+                trace.duration_ms = int((time.perf_counter() - started) * 1000)
+                return response_msg.content, trace
 
-            return ""
+            trace.iterations = iterations
+            trace.duration_ms = int((time.perf_counter() - started) * 1000)
+            return "", trace
 
-        return "Subagent exceeded max iterations without a final response."
+        trace.iterations = iterations
+        trace.duration_ms = int((time.perf_counter() - started) * 1000)
+        return "Subagent exceeded max iterations without a final response.", trace
 
 
 class TaskTool:
@@ -118,3 +208,87 @@ class TaskTool:
 
     def __call__(self, prompt: str, agent: str | None = None, subagent_type: str | None = None):
         return self.runner.run_task(prompt, agent_name=agent or subagent_type)
+
+
+def _extract_citations_from_web_search_result(result: dict[str, Any]) -> set[str]:
+    citations: set[str] = set()
+    if not isinstance(result, dict):
+        return citations
+
+    if result.get("success") is not True:
+        return citations
+
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return citations
+
+    items = payload.get("results")
+    if not isinstance(items, list):
+        return citations
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if isinstance(url, str) and url.startswith("http"):
+            citations.add(url)
+
+    return citations
+
+
+def _extract_source_metadata_from_web_search_result(result: dict[str, Any]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    if not isinstance(result, dict):
+        return out
+    if result.get("success") is not True:
+        return out
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return out
+    items = payload.get("results")
+    if not isinstance(items, list):
+        return out
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not (isinstance(url, str) and url.startswith("http")):
+            continue
+        title = item.get("title")
+        snippet = item.get("content") or item.get("snippet") or item.get("description")
+        meta: dict[str, str] = {}
+        if isinstance(title, str) and title.strip():
+            meta["title"] = title.strip()
+        if isinstance(snippet, str) and snippet.strip():
+            meta["snippet"] = snippet.strip()
+        if meta:
+            out[url] = meta
+    return out
+
+
+def _extract_extracted_from_web_extract_result(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    if result.get("success") is not True:
+        return {}
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return {}
+    url = payload.get("url")
+    raw = payload.get("raw_content")
+    if not isinstance(url, str) or not url.startswith("http"):
+        return {}
+    if not isinstance(raw, str):
+        raw = ""
+    title = payload.get("title")
+    if not isinstance(title, str):
+        title = ""
+    return {
+        "url": url,
+        "title": title.strip(),
+        "raw_content": raw,
+        "sha256": payload.get("sha256") or "",
+        "raw_len": int(payload.get("raw_len") or 0),
+        "truncated": bool(payload.get("truncated") is True),
+    }

@@ -148,7 +148,7 @@ class ProductHuntSource:
         except Exception as e:  # pragma: no cover
             raise ProductHuntError(
                 "Playwright is required for the Product Hunt source. "
-                'Install with: `uv sync --extra scout` (or `uv pip install -e ".[scout]"`), '
+                'Install with: `uv sync --extra fetch` (or `uv pip install -e ".[fetch]"`), '
                 "then run: `uv run playwright install chromium`."
             ) from e
 

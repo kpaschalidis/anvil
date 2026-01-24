@@ -17,14 +17,19 @@ dev = [
     "pytest>=8.0",
     "flake8>=7.0",
 ]
-scout = [
+fetch = [
     "praw>=7.0",
     "playwright>=1.41",
+]
+gui = [
+    "gradio>=4.0",
+]
+search = [
+    "tavily-python>=0.3.5",
 ]
 
 [project.scripts]
 anvil = "anvil.cli:main"
-scout = "scout.cli:main"
 
 [project.entry-points."scout.sources"]
 hackernews = "scout.sources.hackernews:HackerNewsSource"

@@ -29,35 +29,89 @@ ANTHROPIC_API_KEY=sk-ant-...       # for Claude models
 GEMINI_API_KEY=...                 # for Gemini models
 ```
 
-> **Note:** `uv sync` creates a virtual environment in `.venv/`. All `uv run` commands execute inside this venv automatically.
+### Optional: Web Search (Deep Research)
 
-## Usage
+Deep research uses Tavily web search.
 
 ```bash
-# Run with default model (gpt-4o)
+uv sync --extra search
+export TAVILY_API_KEY="tvly-..."
+```
+
+> **Note:** `uv sync` creates a virtual environment in `.venv/`. All `uv run` commands execute inside this venv automatically.
+
+## GUI
+```bash
+# Install gradio
+uv sync --extra gui
+
+# Launch
+uv run anvil gui                    # Default port 7860
+uv run anvil gui --port 8080        # Custom port
+uv run anvil gui --share            # Public link (Gradio hosting)
+```
+
+
+## CLI
+
+```bash
+# Interactive agent (default model = gpt-4o)
 uv run anvil
 
-# Use model aliases
-uv run anvil --model sonnet    # Claude Sonnet
-uv run anvil --model opus      # Claude Opus
-uv run anvil --model flash     # Gemini Flash
-uv run anvil --model deepseek  # DeepSeek
+# Interactive agent with model aliases
+uv run anvil repl --model sonnet
+uv run anvil repl --model opus
+uv run anvil repl --model flash
+uv run anvil repl --model deepseek
 
 # Use full model names
-uv run anvil --model claude-sonnet-4-20250514
-uv run anvil --model gemini/gemini-2.5-flash
+uv run anvil repl --model claude-sonnet-4-20250514
+uv run anvil repl --model gemini/gemini-2.5-flash
 
 # With files pre-loaded
-uv run anvil src/anvil/agent.py
+uv run anvil repl src/anvil/cli.py
 
 # With initial message
-uv run anvil -m "Add error handling to the main function"
+uv run anvil repl -m "Add error handling to the main function"
+
+# Fetch raw documents (Scout sources; fetch-only)
+uv sync --extra fetch
+uv run anvil fetch "AI note taking" --source producthunt --max-documents 50
+
+# Resume fetch (uses `data/sessions/<id>/state.json`)
+uv run anvil fetch --resume <session_id>
+
+# Web research (orchestrator-workers; requires Tavily)
+uv sync --extra search
+export TAVILY_API_KEY="tvly-..."
+uv run anvil research "competitive analysis of AI coding agents"
+
+# Research profiles
+uv run anvil research --profile quick "competitive analysis of AI coding agents"   # default
+uv run anvil research --profile deep "competitive analysis of AI coding agents"    # ~15–20m, includes round-2 gap fill
+
+Reference: `docs/DEEP_RESEARCH_SYSTEM_REFERENCE.md` explains what “Deep Research” systems do (and what’s still needed to reach Anthropic/ChatGPT-level behavior).
+
+    # Saved artifacts (default)
+    # - `data/sessions/<session_id>/meta.json`
+    # - `data/sessions/<session_id>/research/report.md`
+    # - `data/sessions/<session_id>/research/report.json` (structured)
+    # Flags: --profile, --session-id, --data-dir, --output, --no-save-artifacts, --min-citations, --min-domains,
+    #        --target-web-search-calls, --max-web-search-calls, --max-web-extract-calls, --verify-max-tasks, --best-effort
+
+# Resume research (reruns failed workers; fails unless all succeed)
+uv run anvil research --resume <session_id>
+
+# Sessions (list/show/open)
+uv run anvil sessions list
+uv run anvil sessions list --kind research
+uv run anvil sessions open <session_id>
 
 # Options
 uv run anvil --help
-uv run anvil --no-lint        # Disable auto-linting
-uv run anvil --no-auto-commit # Disable auto-commit
-uv run anvil --dry-run        # Preview changes without applying
+uv run anvil repl --no-lint        # Disable auto-linting
+uv run anvil repl --no-auto-commit # Disable auto-commit
+uv run anvil repl --dry-run        # Preview changes without applying
 ```
 
 ### Commands (inside the agent)
@@ -121,9 +175,7 @@ source .venv/bin/activate
 src/
 ├── anvil/          # AI coding agent
 │   ├── cli.py          # Entry point
-│   ├── agent.py        # Main agent loop
 │   ├── config.py       # Configuration + model aliases
-│   ├── llm.py          # LiteLLM wrapper
 │   ├── linter.py       # Python linter
 │   ├── tools/          # Tool registry
 │   ├── git.py          # Git operations
@@ -132,12 +184,11 @@ src/
 │   ├── parser.py       # Response parsing
 │   └── history.py      # Message history
 │
-├── scout/          # Product discovery agent (see below)
-│   ├── agent.py        # Research agent
-│   ├── extract.py      # LLM extraction
-│   ├── sources/        # Data sources (HN, Reddit)
-│   ├── storage.py      # Session persistence
-│   └── ...
+├── scout/          # Fetch-only sources + storage (no CLI)
+│   ├── services/       # FetchService
+│   ├── sources/        # Data sources (HN, Reddit, PH, GitHub)
+│   ├── storage.py      # Session persistence (writes raw.jsonl + sqlite)
+│   └── session.py      # Fetch resume state.json
 │
 └── common/
     └── llm.py      # Shared LLM utilities
@@ -145,49 +196,6 @@ src/
 
 ---
 
-## Scout - Product Discovery Agent
+## Fetch (Scout sources)
 
-Research pain points from online sources using LLM extraction.
-
-### Quick Start
-
-```bash
-# 1. Install Scout dependencies
-uv pip install -e ".[scout]"
-
-# 2. Set API key (in .env or export)
-export OPENAI_API_KEY="sk-..."
-
-# 3. Run research (5-10 min, ~$0.10)
-uv run scout run "CRM software pain points" --profile quick
-
-# 4. View results
-uv run scout stats <session_id>
-uv run scout export <session_id> --format csv
-```
-
-### Documentation
-
-- **[📘 Quick Start Guide](SCOUT_QUICKSTART.md)** - Complete usage examples with real workflows
-- **[⚙️ Config Reference](examples/CONFIG_REFERENCE.md)** - All configuration options explained
-- **[🐚 Shell Examples](examples/scout_examples.sh)** - Interactive CLI examples
-- **[🐍 Python API Examples](examples/scout_python_api.py)** - Programmatic usage
-
-### Key Features
-
-- **Multiple sources**: Hacker News (ready), Product Hunt (scrape), GitHub Issues (API), Reddit (requires approval)
-- **Smart extraction**: LLM-powered pain point identification
-- **Cost management**: Budgets, filtering, adaptive scaling
-- **Resumable sessions**: Pause and continue research
-- **Rich exports**: CSV, JSON, Markdown summaries
-- **Session management**: Tags, cloning, archiving
-
-### Research Profiles
-
-| Profile | Time | Cost | Best For |
-|---------|------|------|----------|
-| `quick` | 5-10 min | ~$0.10 | Initial validation |
-| `standard` | 15-30 min | ~$0.50 | Most use cases |
-| `deep` | 1-2 hours | ~$2-5 | Comprehensive research |
-
-See [SCOUT_QUICKSTART.md](SCOUT_QUICKSTART.md) for detailed examples and workflows.
+Scout is now a fetch-only module (sources + storage + resumable sessions). Use `anvil fetch ...` and `anvil sessions ...`.
